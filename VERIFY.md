@@ -4,7 +4,7 @@
 
 ## 0.1.4 results
 
-Run on 2026-10-15, about 11:53 AM ET, Linux, Node v22.14.0. Keyless live smoke only (no `THEMEPARKS_API_KEY` in this run).
+Run on 2026-10-15, about 1:05 PM ET, Linux, Node v20.19.2, commit `5002cf3` (plus README version mention for mcp-path). Keyed live smoke used a free-tier key sourced from the local secrets file (never printed or committed).
 
 | Suite | Result |
 |---|---|
@@ -13,12 +13,13 @@ Run on 2026-10-15, about 11:53 AM ET, Linux, Node v22.14.0. Keyless live smoke o
 | `npm run offline` (7) | PASS |
 | `npm run offline-regression` (6) | PASS |
 | `npm run offline-keyed` (15, mocked plans and WebSocket) | PASS |
-| `npm run offline-audit` (14: search errors, stdio, cache grace, redirects, dates, DST, watch, page cap, clamp note, hyphenated names, retryAfter) | PASS |
+| `npm run offline-audit` (15: search errors, stdio, cache grace, redirects, dates, DST, watch, page cap, clamp note, hyphenated names, retryAfter) | PASS |
 | `npm run smoke` keyless live | 50/50 PASS |
+| `npm run smoke -- --keyed` live | 57/57 PASS (50 keyless + 7 keyed) |
 
-`initialize` reported `themeparks-web 0.1.4`. The keyless window check still returns `history_window_exceeded` for an explicit range past 7 days. NightFlight Oct 11, 4-6 PM ET still reads DOWN 7, OPERATING 42, DOWN 22, OPERATING 48. Keyed live checks (plans above free, park daily `next` paging, watch close 4029) stay covered by the mocked keyed suite.
+`initialize` reported `themeparks-web 0.1.4`. Destination schedules return non-empty `parks[]` (6 for WDW). NightFlight Oct 11, 4-6 PM ET still reads DOWN 7, OPERATING 42, DOWN 22, OPERATING 48. Keyed: free plan 30d, park daily 30 days, minute-level beyond 7 days, watch snapshot + updates, single-ride watch stop-when-met.
 
-Follow-up the same day, about 12:18 PM ET, Node v22.14.0: destination schedules include a non-empty `parks[]` (offline and keyless smoke), and a DST gap suggests the time after the jump. Offline suites and keyless smoke 50/50 passed again.
+Earlier the same day (about 11:53 AM and 12:18 PM ET, Node v22.14.0): keyless offline + smoke 50/50 after audit fixes and the restored `parks[]` / DST-gap follow-up; keyed live was mocked-only in those runs.
 
 ## 0.1.3 record
 
