@@ -42,6 +42,7 @@ LiveStatus  = { id, name, type, park, status: OPERATING|DOWN|CLOSED|REFURBISHMEN
                 lastUpdated, ageMinutes, stale? }
 RideDetails = { attractionType, minimumHeight, maximumHeight, heightUnit: "cm", mayGetWet, location {latitude, longitude}, ...other park tags }
 ScheduleDay = { date, entries: [{ park?, type: OPERATING|TICKETED_EVENT|EXTRA_HOURS|PRIVATE_EVENT|INFO, open, close, description?, purchases? }] }
+Resort schedule also includes parks: [{ id, name }] for each park at the destination.
 StatusSpan  = { status, start, end, startLocal, endLocal, minutes, openEnded? }      // park time zone
 Opening     = { status, standbyWait, observedAt, observedAtLocal, carriedInMinutes, staleCarryIn?, degraded?, degradedReason? }
 DailyUptime = { date, uptimePct, basis, operatingMinutes, downMinutes, unknownMinutes, scheduledMinutes,

@@ -16,6 +16,9 @@ Audit fixes. The key stays optional. Results still carry `attribution`. No new r
 - `retryAfter` is read from the top-level body field, then `error.retryAfter`, then the `Retry-After` header (seconds or HTTP-date). A process-wide budget (default 300 per 60 seconds, or the plan's limit) fails with `retryAfterSeconds` instead of sleeping. Over budget, a within-grace cached answer is served with `staleBecause: "rate_limited"`.
 - `themeparks_uptime` `days` above the plan window is clamped and the result includes `note` stating the requested days, the allowed days, and the range returned. An explicit `from`/`to` past the window still returns `history_window_exceeded`.
 
+- A destination `themeparks_schedule` result includes `parks` (`id` and `name` for each park) along with the per-day `park` label on each entry.
+- A daylight-saving gap suggests the clock time after the jump (2:30 AM skipped in `America/New_York` suggests 3:30 AM EDT).
+
 ## Docs
 
 README, the skill, PRIVACY, SECURITY, and TERMS match the behavior above: keyless history that includes today can lag live data by up to an hour; a park daily call can spend up to 15 history calls; watch works on Node 22+ or Node 20.10+ with `--experimental-websocket`.

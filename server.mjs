@@ -663,7 +663,8 @@ function localToInstant(wall, tz) {
   const ms = guess - off * 60_000;
   const back = localTime(ms, tz);
   if (back.iso.slice(0, 19) !== wanted) {
-    throw new ToolError("bad_request", `${wanted} does not exist in ${tz} (the clock skips that time). Nearest park time is ${back.text}.`);
+    const next = timeAfterGap(ms, tz, wanted, back);
+    throw new ToolError("bad_request", `${wanted} does not exist in ${tz} (the clock skips that time). The next valid park time is ${next.text}.`);
   }
   const iso = `${wanted}${fmtOffset(off)}`;
   let ambiguousNote;
@@ -683,6 +684,25 @@ function localToInstant(wall, tz) {
     if (ambiguousNote) break;
   }
   return { ms, iso, ambiguousNote };
+}
+
+// When a wall time falls in a daylight-saving gap, name the same clock position after the jump (2:30 AM skipped -> 3:30 AM).
+function timeAfterGap(ms, tz, wanted, back) {
+  const step = 60_000;
+  const from = Math.floor((ms - 3 * 3_600_000) / step) * step;
+  const to = ms + 3 * 3_600_000;
+  let prev = tzOffsetMinutes(tz, from);
+  for (let t = from + step; t <= to; t += step) {
+    const off = tzOffsetMinutes(tz, t);
+    const deltaMin = off - prev;
+    if (deltaMin > 0) {
+      const before = localTime(t - step, tz);
+      const into = Date.parse(`${wanted}Z`) - (Date.parse(`${before.iso.slice(0, 19)}Z`) + step);
+      return localTime(t + into, tz);
+    }
+    prev = off;
+  }
+  return back;
 }
 
 function localTime(ms, tz) {
@@ -835,10 +855,19 @@ async function scheduleTool(args) {
   const months = [...new Set(Array.from({ length: days }, (_, i) => addDays(from, i).slice(0, 7)))];
   const responses = await Promise.all(months.map((m) => api(`/entity/${entity.id}/schedule/${m.slice(0, 4)}/${m.slice(5, 7)}`)));
   const byDate = new Map();
+  const parkList = [];
+  const seenParks = new Set();
   const rows = responses.flatMap(({ data }) => [
     ...(data?.schedule ?? []).map((s) => ({ s, park: undefined })),
-    ...(data?.parks ?? []).flatMap((pk) => (pk.schedule ?? []).map((s) => ({ s, park: pk.name }))),
+    ...(data?.parks ?? []).flatMap((pk) => {
+      if (pk?.id && !seenParks.has(pk.id)) {
+        seenParks.add(pk.id);
+        parkList.push({ id: pk.id, name: pk.name ?? null });
+      }
+      return (pk.schedule ?? []).map((s) => ({ s, park: pk.name }));
+    }),
   ]);
+  parkList.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   {
     for (const { s, park } of rows) {
       if (s.date < from || s.date > to || (types && !types.has(s.type))) continue;
@@ -858,6 +887,7 @@ async function scheduleTool(args) {
     entity: entityHeader(entity),
     range: { from, to, timezone: tz },
     fetchedAt: responses[0]?.fetchedAt,
+    ...(entity.type === "DESTINATION" ? { parks: parkList } : {}),
     days: scheduleDays,
   };
   const missing = Array.from({ length: days }, (_, i) => addDays(from, i)).filter((d) => !byDate.has(d));

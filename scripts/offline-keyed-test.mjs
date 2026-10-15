@@ -38,9 +38,12 @@ const run = (n, a) => m.callTool(n, a);
 const pass = (s) => console.log("PASS " + s);
 
 let r = await run("themeparks_schedule", { entity: WDW, from: "2026-10-15", days: 1 });
+assert.ok(Array.isArray(r.payload.parks) && r.payload.parks.length > 0);
+assert.equal(r.payload.parks[0].id, MK);
+assert.equal(r.payload.parks[0].name, "Magic Kingdom Park");
 assert.equal(r.payload.days[0].entries[0].park, "Magic Kingdom Park");
 assert.ok(r.payload.attribution.markdown.includes("Powered by ThemeParks.wiki"));
-pass("destination schedule reads parks[] and labels each entry; attribution present");
+pass("destination schedule includes a non-empty parks[] and labels each entry; attribution present");
 
 r = await run("themeparks_find", { query: "Space Mountain", within: "Magic Kingdom" });
 r = await run("themeparks_live", { entity: "Space Mountain", within: MK });

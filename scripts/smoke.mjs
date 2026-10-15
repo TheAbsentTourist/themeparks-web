@@ -262,8 +262,8 @@ await check("every result carries Powered by ThemeParks.wiki", async () => {
 await check("BUG1 destination schedule returns park entries", async () => {
   const { isError, p } = await call("themeparks_schedule", { entity: WDW, days: 2 });
   const parks = new Set(p.days.flatMap((d) => d.entries.map((e) => e.park)));
-  assert(!isError && p.days.length > 0 && parks.size >= 4, JSON.stringify(p).slice(0, 300));
-  return `${p.days.length} days, parks: ${[...parks].join("; ")}`;
+  assert(!isError && p.days.length > 0 && parks.size >= 4 && Array.isArray(p.parks) && p.parks.length >= 4, JSON.stringify({ parks: p.parks, days: p.days?.length }).slice(0, 300));
+  return `${p.days.length} days, parks[] ${p.parks.length}: ${[...parks].join("; ")}`;
 });
 
 await check("BUG2 destination label correct when within is a park", async () => {

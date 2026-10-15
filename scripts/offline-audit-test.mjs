@@ -235,6 +235,7 @@ const run = (name, args) => m.callTool(name, args);
     threw = true;
     assert.equal(err.code, "bad_request");
     assert.match(err.message, /does not exist/);
+    assert.match(err.message, /3:30:00 AM EDT/);
   }
   assert.equal(threw, true);
   const ov = m.localToInstant("2026-11-01T01:30", "America/New_York");

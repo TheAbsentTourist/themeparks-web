@@ -18,6 +18,8 @@ Run on 2026-10-15, about 11:53 AM ET, Linux, Node v22.14.0. Keyless live smoke o
 
 `initialize` reported `themeparks-web 0.1.4`. The keyless window check still returns `history_window_exceeded` for an explicit range past 7 days. NightFlight Oct 11, 4-6 PM ET still reads DOWN 7, OPERATING 42, DOWN 22, OPERATING 48. Keyed live checks (plans above free, park daily `next` paging, watch close 4029) stay covered by the mocked keyed suite.
 
+Follow-up the same day, about 12:18 PM ET, Node v22.14.0: destination schedules include a non-empty `parks[]` (offline and keyless smoke), and a DST gap suggests the time after the jump. Offline suites and keyless smoke 50/50 passed again.
+
 ## 0.1.3 record
 
 Run on 2026-10-15, about 11:25 AM ET, on Grok Bot's box (Linux, Node v20.19.2). All results below are real.
