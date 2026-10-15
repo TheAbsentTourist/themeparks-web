@@ -1,9 +1,9 @@
 {
   "name": "themeparks-web",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
-  "description": "Theme park live ride status, wait times, virtual queues, park hours, and ride uptime history from the free ThemeParks.wiki API. Keyless. Unofficial; not affiliated with ThemeParks.wiki or any park.",
+  "description": "Theme park live ride status, wait times, virtual queues, ride details, best time to ride, park hours, and minute-level ride downtime history from the free ThemeParks.wiki API. Works keyless; an optional free key extends history to 30 days and enables live push. Powered by ThemeParks.wiki. Unofficial; not affiliated with ThemeParks.wiki or any park.",
   "engines": {
     "node": ">=18"
   },
@@ -16,7 +16,8 @@
     "check": "node --check ./server.mjs",
     "smoke": "node ./scripts/smoke.mjs",
     "offline": "node ./scripts/offline-test.mjs",
-    "mcp-path": "node ./scripts/mcp-path-test.mjs"
+    "mcp-path": "node ./scripts/mcp-path-test.mjs",
+    "offline-keyed": "node scripts/offline-keyed-test.mjs"
   },
   "homepage": "https://github.com/TheAbsentTourist/themeparks-web#readme",
   "repository": {

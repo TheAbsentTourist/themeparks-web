@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Live MCP smoke over stdio against api.themeparks.wiki. Prints PASS/FAIL per check. Optional: --samples <file> writes real outputs. */
+/** Live MCP smoke over stdio against api.themeparks.wiki. Prints PASS/FAIL per check. Optional: --samples <file> writes real outputs; --keyed also runs key-only checks when THEMEPARKS_API_KEY is set (the key is never printed). */
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -12,8 +12,8 @@ const WDW = "e957da41-3552-4cf6-b636-5babc5cbc4e5";
 const UOR = "89db5d43-c434-4097-b71f-f6869f495a22";
 const SPACE_MOUNTAIN = "b2260923-9315-40fd-9c6b-44dd811dbe64";
 
-function startServer(env) {
-  const child = spawn(process.execPath, ["./server.mjs"], { cwd: root, env, stdio: ["pipe", "pipe", "inherit"] });
+function startServer(env, flags = []) {
+  const child = spawn(process.execPath, [...flags, "./server.mjs"], { cwd: root, env, stdio: ["pipe", "pipe", "inherit"] });
   let buf = Buffer.alloc(0);
   const waiting = new Map();
   child.stdout.on("data", (chunk) => {
@@ -67,8 +67,8 @@ delete env.THEMEPARKS_API_KEY;
 const { child, rpc, call } = startServer(env);
 
 await check("initialize serverInfo", async () => {
-  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.1" } });
-  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.1", JSON.stringify(m.result.serverInfo));
+  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.2" } });
+  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.2", JSON.stringify(m.result.serverInfo));
   return `${m.result.serverInfo.name} ${m.result.serverInfo.version}`;
 });
 
@@ -250,6 +250,101 @@ await check("bad flag value -> bad_request", async () => {
   return p.message;
 });
 
+const ATTR = (p) => p?.attribution?.url === "https://themeparks.wiki" && /Powered by ThemeParks\.wiki/.test(p.attribution.markdown);
+
+await check("every result carries Powered by ThemeParks.wiki", async () => {
+  const a = await call("themeparks_find", { query: "EPCOT" });
+  const b = await call("themeparks_live", { entity: "Narnia World" });
+  assert(ATTR(a.p) && ATTR(b.p), JSON.stringify(a.p.attribution));
+  return a.p.attribution.markdown;
+});
+
+await check("BUG1 destination schedule returns park entries", async () => {
+  const { isError, p } = await call("themeparks_schedule", { entity: WDW, days: 2 });
+  const parks = new Set(p.days.flatMap((d) => d.entries.map((e) => e.park)));
+  assert(!isError && p.days.length > 0 && parks.size >= 4, JSON.stringify(p).slice(0, 300));
+  return `${p.days.length} days, parks: ${[...parks].join("; ")}`;
+});
+
+await check("BUG2 destination label correct when within is a park", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: "Space Mountain", within: "Magic Kingdom" });
+  assert(!isError && /Walt Disney World/.test(p.entity.destination) && p.entity.park === "Magic Kingdom Park", JSON.stringify(p.entity));
+  return `${p.entity.park} / ${p.entity.destination}`;
+});
+
+await check("BUG3 slug resolves directly, no scan", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: "seaworldorlandoresort", limit: 1 });
+  assert(!isError && p.entity.type === "DESTINATION" && /SeaWorld/.test(p.entity.name), JSON.stringify(p).slice(0, 300));
+  return p.entity.name;
+});
+
+await check("BUG3 unknown operator id fails fast, no scan", async () => {
+  const t = Date.now();
+  const { isError, p } = await call("themeparks_live", { entity: "80010190;entityType=Attraction" });
+  assert(isError && p.error === "not_found" && !p.scan && Date.now() - t < 10_000, JSON.stringify(p));
+  return `${Date.now() - t} ms`;
+});
+
+await check("ride details (VelociCoaster minimumHeight 130 cm)", async () => {
+  const { isError, p } = await call("themeparks_find", { query: "VelociCoaster", include_details: true, limit: 1 });
+  const d = p.matches[0].details;
+  assert(!isError && d.attractionType === "RIDE" && d.minimumHeight === 130 && d.heightUnit === "cm" && d.location, JSON.stringify(d));
+  return JSON.stringify(d);
+});
+
+await check("best time to ride at WDW (forecast with percentage)", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: "Space Mountain", within: "Magic Kingdom" });
+  const b = p.items[0].bestTimeToRide;
+  assert(!isError && b && (b.available ? b.predictedWait >= 0 && "percentage" in b : b.reason), JSON.stringify(b));
+  samples.best_time_space_mountain = b;
+  return b.available ? `${b.startLocal} - ${b.endLocal}: ${b.predictedWait}m (${b.percentage}%)` : b.reason;
+});
+
+await check("best time unavailable outside WDW/DLR says so", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: "NightFlight Expedition" });
+  const b = p.items[0]?.bestTimeToRide;
+  assert(!isError && b && b.available === false && /Walt Disney World/.test(b.reason), JSON.stringify(b));
+  return b.reason;
+});
+
+await check("history changes: NightFlight Expedition Oct 11 4-6 PM ET", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
+  assert(!isError && p.entity.park === "Dollywood" && p.intervals.length > 0 && p.opening && p.range.from === "2026-10-11T16:00:00-04:00", JSON.stringify(p).slice(0, 400));
+  samples.nightflight_oct11_4_6pm = { range: p.range, opening: p.opening, intervals: p.intervals, minutesByStatus: p.minutesByStatus, waitTimeline: p.waitTimeline };
+  return `${p.intervals.map((i) => `${i.status} ${i.startLocal.split(", ")[1]}-${i.endLocal.split(", ")[1]} (${i.minutes}m)`).join("; ")} | waits ${p.waitTimeline?.min}-${p.waitTimeline?.max}m`;
+});
+
+await check("history changes: Magic Kingdom park-wide DOWN events Oct 11", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "Magic Kingdom", granularity: "changes", date: "2026-10-11" });
+  assert(!isError && p.totalEvents > 0 && p.events.every((e) => e.status === "DOWN"), JSON.stringify(p).slice(0, 300));
+  samples.mk_down_oct11 = { totalEvents: p.totalEvents, byEntity: p.byEntity, events: p.events };
+  return `${p.totalEvents} DOWN spans across ${p.byEntity.length} rides; worst ${p.byEntity[0].name} ${p.byEntity[0].minutes}m`;
+});
+
+await check("history changes: park range over a day -> bad_request", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "Magic Kingdom", granularity: "changes", from: "2026-10-10T08:00", to: "2026-10-12T08:00" });
+  assert(isError && p.error === "bad_request", JSON.stringify(p));
+  return p.message;
+});
+
+await check("keyless coverage", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: SPACE_MOUNTAIN, granularity: "coverage" });
+  assert(!isError && p.coverage && p.access.tier === "keyless", JSON.stringify(p).slice(0, 300));
+  return JSON.stringify(p.coverage.kinds?.status ?? p.coverage).slice(0, 120);
+});
+
+await check("key_status without key", async () => {
+  const { isError, p } = await call("themeparks_find", { mode: "key_status" });
+  assert(!isError && p.keyConfigured === false && p.getAKey.signup === "https://www.themeparks.wiki/register", JSON.stringify(p));
+  return p.message;
+});
+
+await check("watch without key -> key_required", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: SPACE_MOUNTAIN, mode: "watch" });
+  assert(isError && p.error === "key_required", JSON.stringify(p));
+  return p.message;
+});
+
 child.kill();
 
 await check("unexpanded ${THEMEPARKS_API_KEY} placeholder treated as no key", async () => {
@@ -272,6 +367,56 @@ await check("newline-delimited framing", async () => {
   assert(JSON.parse(line).result.tools.length === 4, line.slice(0, 200));
   return "tools/list over LF";
 });
+
+if (process.argv.includes("--keyed")) {
+  const KEY = process.env.THEMEPARKS_API_KEY ?? "";
+  if (!KEY || /^\$\{/.test(KEY)) {
+    console.log("SKIP keyed checks: THEMEPARKS_API_KEY not set");
+  } else {
+    const flags = typeof globalThis.WebSocket === "function" ? [] : ["--experimental-websocket"];
+    const k = startServer({ ...env, THEMEPARKS_API_KEY: KEY }, flags);
+    await k.rpc("initialize", {});
+    const noKey = (p) => !JSON.stringify(p).includes(KEY);
+    await check("KEYED key_status reads /v1/me", async () => {
+      const { isError, p } = await k.call("themeparks_find", { mode: "key_status" });
+      assert(!isError && p.valid && p.plan.tier && p.plan.historyRateLimit && noKey(p), JSON.stringify(p).slice(0, 300));
+      return `${p.plan.tier}, ${p.plan.historyDays}d (earliest ${p.plan.historyEarliestDate}), history ${p.plan.historyRateLimit.remaining}/${p.plan.historyRateLimit.limit}/h, rest ${p.plan.rateLimit.remaining}/${p.plan.rateLimit.limit}/min`;
+    });
+    await check("KEYED 30-day daily history with RateLimit-History budget", async () => {
+      const { isError, p } = await k.call("themeparks_uptime", { entity: SPACE_MOUNTAIN, days: 30 });
+      assert(!isError && p.days.length > 7 && p.access.source === "/v1/me" && p.historyBudget?.limit, JSON.stringify(p).slice(0, 300));
+      return `${p.range.from}..${p.range.to} ${p.days.length} days uptime ${p.summary.uptimePct}%, budget ${p.historyBudget.remaining}/${p.historyBudget.limit}`;
+    });
+    await check("KEYED park daily 30 days", async () => {
+      const { isError, p } = await k.call("themeparks_uptime", { entity: "Magic Kingdom", days: 30, limit: 3 });
+      assert(!isError && p.entities.length && p.pages >= 1, JSON.stringify(p).slice(0, 300));
+      return `${p.pages} page(s); ${p.entities.map((e) => `${e.name} ${e.uptimePct}%`).join("; ")}`;
+    });
+    await check("KEYED minute-level beyond 7 days", async () => {
+      const day = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+      const { isError, p } = await k.call("themeparks_uptime", { entity: SPACE_MOUNTAIN, granularity: "changes", date: day });
+      assert(!isError && p.intervals.length > 0, JSON.stringify(p).slice(0, 300));
+      return `${day}: ${JSON.stringify(p.minutesByStatus)}`;
+    });
+    await check("KEYED coverage", async () => {
+      const { isError, p } = await k.call("themeparks_uptime", { entity: "Magic Kingdom", granularity: "coverage" });
+      assert(!isError && p.coverage && p.access.tier !== "keyless", JSON.stringify(p).slice(0, 300));
+      return JSON.stringify(p.coverage.summary ?? {}).slice(0, 160);
+    });
+    await check("KEYED watch: WebSocket snapshot + updates", async () => {
+      const { isError, p } = await k.call("themeparks_live", { entity: "Magic Kingdom", mode: "watch", type: "ATTRACTION", watch_seconds: 30 });
+      assert(!isError && p.connection?.protocol === "preview" && p.subscription && p.snapshot.entities > 0 && noKey(p), JSON.stringify(p).slice(0, 400));
+      samples.watch_mk = { connection: p.connection, snapshot: p.snapshot, updateCount: p.updateCount, updates: p.updates.slice(0, 5), stopReason: p.stopReason };
+      return `limits=${JSON.stringify(p.connection.limits)} snapshot=${p.snapshot.entities} updates=${p.updateCount} in ${p.watchedSeconds}s (${p.stopReason})`;
+    });
+    await check("KEYED watch single ride stops when condition already met", async () => {
+      const { isError, p } = await k.call("themeparks_live", { entity: SPACE_MOUNTAIN, mode: "watch", until_status: "OPERATING,CLOSED,DOWN,REFURBISHMENT", stop_if_already_met: true, watch_seconds: 20 });
+      assert(!isError && p.stopReason === "condition_met" && p.triggeredBy, JSON.stringify(p).slice(0, 400));
+      return `${p.triggeredBy.name} ${p.triggeredBy.status} after ${p.watchedSeconds}s`;
+    });
+    k.child.kill();
+  }
+}
 
 if (samplesPath) writeFileSync(samplesPath, JSON.stringify(samples, null, 2));
 const failed = results.filter((r) => !r.ok).length;

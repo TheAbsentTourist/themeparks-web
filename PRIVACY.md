@@ -10,7 +10,7 @@ The plugin runs on the installer's machine. It has no backend operated by the pl
 
 - The park, resort, or entity ids and date ranges needed to answer the request. Free-text names are matched locally and are not sent.
 - An identifying User-Agent (`ThemeParksWebPlugin/<version>` with a contact email).
-- Your `THEMEPARKS_API_KEY` as the `x-api-key` header, only when you set one, and only to `api.themeparks.wiki`.
+- Your `THEMEPARKS_API_KEY` as the `x-api-key` header, only when you set one, and only to `api.themeparks.wiki`. With `themeparks_live mode=watch`, the same key goes in the first WebSocket frame to `wss://api.themeparks.wiki/v1/live`; the socket closes before the tool returns.
 
 No location, account, or personal data is sent.
 

@@ -7,12 +7,21 @@
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "themeparks-web", version: VERSION };
 const API = "https://api.themeparks.wiki/v1";
 const UA = `ThemeParksWebPlugin/${VERSION} (+https://github.com/TheAbsentTourist; chucktastictime@gmail.com)`;
 const SOURCE = "ThemeParks.wiki (unofficial; data from park apps)";
+const ATTRIBUTION = {
+  text: "Powered by ThemeParks.wiki",
+  url: "https://themeparks.wiki",
+  markdown: "[Powered by ThemeParks.wiki](https://themeparks.wiki)",
+  required: "ThemeParks.wiki's free use requires this credit. Include the markdown link in any answer built from this data.",
+};
+const KEY_SIGNUP_URL = "https://www.themeparks.wiki/register";
+const KEY_CREATE_URL = "https://www.themeparks.wiki/profile";
+const FORECAST_NOTE = "ThemeParks.wiki publishes wait forecasts only for Walt Disney World and Disneyland Resort parks.";
 const TIMEOUT_MS = 20_000;
 const LIVE_TTL_MS = 60_000;
 const DEFAULT_TTL_MS = 300_000;
@@ -22,9 +31,11 @@ const STRONG_MATCH = 0.9;
 const TIER_STOP = 0.8;
 const MAJOR_RESORTS = /walt disney world|disneyland|tokyo disney|shanghai disney|hong kong disney|universal|seaworld|busch gardens|europa-park|efteling|cedar point|knott|legoland florida|six flags magic mountain|dollywood/i;
 const STALE_AFTER_MINUTES = 24 * 60;
+const DETAILS_MAX = 25;
 const MATCH_THRESHOLD = 0.5;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const ID_LIKE = /^(?=\S+$)(?:.*[;=_].*|\d{3,}|[a-z0-9]+(?:-[a-z0-9]+){2,})$/;
 
 const ENTITY_TYPES = ["DESTINATION", "PARK", "ATTRACTION", "SHOW", "RESTAURANT", "HOTEL"];
 const STATUSES = ["OPERATING", "DOWN", "CLOSED", "REFURBISHMENT"];
@@ -51,7 +62,7 @@ const cache = new Map();
 const inflight = new Map();
 
 async function api(path) {
-  const ttl = /\/live(\?|$)/.test(path) ? LIVE_TTL_MS : path.endsWith("/children") ? CHILDREN_TTL_MS : DEFAULT_TTL_MS;
+  const ttl = path === "/me" ? 0 : /\/live(\?|$)/.test(path) ? LIVE_TTL_MS : path.endsWith("/children") ? CHILDREN_TTL_MS : DEFAULT_TTL_MS;
   const hit = cache.get(path);
   if (hit && Date.now() - hit.at < ttl) return { data: hit.data, fetchedAt: new Date(hit.at).toISOString(), cached: true };
   if (inflight.has(path)) return inflight.get(path);
@@ -73,11 +84,14 @@ async function fetchFresh(path, hit) {
     throw new ToolError("network_error", `Could not reach ThemeParks.wiki: ${err?.message || err}`);
   }
   const body = await res.json().catch(() => null);
+  const historyBudget = budgetFrom(res.headers);
+  if (historyBudget) lastHistoryBudget = { ...historyBudget, seenAt: new Date().toISOString() };
   if (res.status === 429) {
     const retryAfterSeconds = Number(body?.retryAfter ?? res.headers.get("retry-after")) || 60;
     if (hit) return staleFrom("rate_limited");
     throw new ToolError("rate_limited", `ThemeParks.wiki rate limit reached. Retry in ${retryAfterSeconds}s.`, {
       retryAfterSeconds,
+      historyBudget: historyBudget ?? undefined,
       hint: apiKey() ? undefined : "A free THEMEPARKS_API_KEY raises the history budget from 60 to 600 calls per hour.",
     });
   }
@@ -85,7 +99,13 @@ async function fetchFresh(path, hit) {
     const e = body?.error;
     const type = typeof e === "object" && e ? e.type : e;
     const message = (typeof e === "object" && e?.message) || body?.message || `HTTP ${res.status}`;
-    const code = res.status === 404 ? "not_found" : type === "HISTORY_WINDOW_EXCEEDED" ? "history_window_exceeded" : "upstream_error";
+    const code = res.status === 404
+      ? "not_found"
+      : res.status === 401
+      ? "unauthorized"
+      : type === "HISTORY_WINDOW_EXCEEDED"
+      ? "history_window_exceeded"
+      : "upstream_error";
     throw new ToolError(code, message, {
       status: res.status,
       upstreamType: type || undefined,
@@ -93,8 +113,24 @@ async function fetchFresh(path, hit) {
     });
   }
   const at = Date.now();
-  cache.set(path, { at, data: body });
-  return { data: body, fetchedAt: new Date(at).toISOString(), cached: false };
+  if (path !== "/me") cache.set(path, { at, data: body });
+  return { data: body, fetchedAt: new Date(at).toISOString(), cached: false, historyBudget };
+}
+
+// RateLimit-History-* headers (sent when a history budget is metered for this caller). Values only, never the key.
+let lastHistoryBudget = null;
+function budgetFrom(headers) {
+  const get = (n) => headers?.get?.(n);
+  const limit = get("ratelimit-history-limit");
+  const remaining = get("ratelimit-history-remaining");
+  const reset = get("ratelimit-history-reset");
+  if (limit == null && remaining == null) return null;
+  return {
+    limit: limit == null ? null : Number(limit),
+    remaining: remaining == null ? null : Number(remaining),
+    resetSeconds: reset == null ? null : Number(reset),
+    policy: get("ratelimit-history-policy") ?? undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +181,7 @@ async function catalog() {
   const { data } = await api("/destinations");
   const refs = [];
   for (const d of data?.destinations ?? []) {
-    refs.push({ id: d.id, name: d.name, type: "DESTINATION", slug: d.slug ?? null });
+    refs.push({ id: d.id, name: d.name, type: "DESTINATION", slug: d.slug ?? null, externalId: d.externalId ?? null });
     for (const p of d.parks ?? []) refs.push({ id: p.id, name: p.name, type: "PARK", destination: d.name, destinationId: d.id });
   }
   return refs;
@@ -201,8 +237,28 @@ async function rankAnywhere(query, keep = () => true) {
   return { ranked: [...ranked, ...local].sort((a, b) => b.score - a.score), scan };
 }
 
+const CORE_KEYS = new Set(["id", "name", "slug", "parkId", "parentId", "timezone", "entityType", "destinationId", "externalId", "attractionType", "location", "_id"]);
+
+// Ride attributes. ThemeParks.wiki spreads tags into the entity document, so keys vary by park.
+function rideDetails(data) {
+  const extra = Object.fromEntries(Object.entries(data ?? {}).filter(([k, v]) => !CORE_KEYS.has(k) && v !== null && typeof v !== "object"));
+  const out = {
+    attractionType: data?.attractionType ?? null,
+    minimumHeight: data?.minimumHeight ?? null,
+    maximumHeight: data?.maximumHeight ?? null,
+    heightUnit: data?.minimumHeight != null || data?.maximumHeight != null ? "cm" : undefined,
+    mayGetWet: data?.mayGetWet ?? null,
+    location: data?.location ? { latitude: data.location.latitude, longitude: data.location.longitude } : null,
+  };
+  for (const [k, v] of Object.entries(extra)) if (!(k in out)) out[k] = v;
+  return out;
+}
+
 async function entityDetails(id) {
-  const { data } = await api(`/entity/${encodeURIComponent(id)}`);
+  const [{ data }, refs] = await Promise.all([api(`/entity/${encodeURIComponent(id)}`), catalog()]);
+  const byId = new Map(refs.map((r) => [r.id, r]));
+  const parkId = data.entityType === "PARK" ? null : data.parkId ?? (byId.get(data.parentId)?.type === "PARK" ? data.parentId : null);
+  const destination = data.entityType === "DESTINATION" ? undefined : byId.get(data.destinationId)?.name ?? byId.get(parkId)?.destination;
   return {
     id: data.id,
     name: data.name,
@@ -211,13 +267,38 @@ async function entityDetails(id) {
     timezone: data.timezone ?? null,
     parentId: data.parentId ?? null,
     destinationId: data.destinationId ?? null,
+    park: parkId ? byId.get(parkId)?.name : undefined,
+    destination,
+    details: ["ATTRACTION", "SHOW", "RESTAURANT"].includes(data.entityType) ? rideDetails(data) : undefined,
   };
+}
+
+// Operator ids and slugs resolve in one call, never a scan.
+async function resolveDirect(text) {
+  const exact = (await catalog()).find((r) => r.slug === text || r.externalId === text);
+  if (exact) return entityDetails(exact.id);
+  if (/\s/.test(text) || !/[-_;=.\d]/.test(text)) return null;
+  try {
+    return await entityDetails(text);
+  } catch (err) {
+    if (err instanceof ToolError && err.code === "not_found") return null;
+    throw err;
+  }
 }
 
 async function resolve(ref, within) {
   const text = typeof ref === "string" ? ref.trim() : "";
   if (!text) throw new ToolError("bad_request", "entity is required (a name like \"Magic Kingdom\" or a ThemeParks.wiki id).");
   if (UUID.test(text)) return entityDetails(text);
+  if (!within) {
+    const direct = await resolveDirect(text);
+    if (direct) return direct;
+    if (ID_LIKE.test(text)) {
+      throw new ToolError("not_found", `No ThemeParks.wiki entity has the id, slug, or destination externalId "${text}".`, {
+        hint: "Upstream resolves UUIDs, slugs, and destination externalIds directly; ride-level operator ids are not indexed. Search by name instead.",
+      });
+    }
+  }
   const parent = within ? await resolve(within) : null;
   const { ranked, scan } = parent ? { ranked: rank(text, await childrenOf(parent)) } : await rankAnywhere(text);
   if (!ranked.length) {
@@ -234,7 +315,8 @@ async function resolve(ref, within) {
       candidates: ranked.slice(0, 8).map(entityOut),
     });
   }
-  return { ...(await entityDetails(top.ref.id)), park: top.ref.park, destination: top.ref.destination ?? parent?.name, matchScore: top.score };
+  const found = await entityDetails(top.ref.id);
+  return { ...found, park: found.park ?? top.ref.park, destination: found.destination ?? top.ref.destination, matchScore: top.score };
 }
 
 function entityOut({ ref, score: s }) {
@@ -264,7 +346,40 @@ const QUEUE_FIELDS = {
   }),
 };
 
-function toLiveStatus(raw, { parks, now, includeForecast, includeTimes }) {
+// Today's lowest predicted wait window from the hourly forecast (WDW and Disneyland Resort only).
+function bestTimeToRide(forecast, tz, now) {
+  if (!forecast?.length) return { available: false, reason: FORECAST_NOTE };
+  const today = todayIn(tz, now);
+  const hourStart = now - (now % 3_600_000);
+  const slots = forecast
+    .filter((f) => f.waitTime != null && todayIn(tz, Date.parse(f.time)) === today && Date.parse(f.time) >= hourStart)
+    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+  if (!slots.length) return { available: false, reason: "No forecast hours left today." };
+  const low = Math.min(...slots.map((f) => f.waitTime));
+  let best = null;
+  for (let i = 0; i < slots.length; i++) {
+    if (slots[i].waitTime !== low) continue;
+    let j = i;
+    while (j + 1 < slots.length && slots[j + 1].waitTime === low && Date.parse(slots[j + 1].time) - Date.parse(slots[j].time) === 3_600_000) j++;
+    if (!best || j - i > best.j - best.i) best = { i, j };
+    i = j;
+  }
+  const start = slots[best.i];
+  const endMs = Date.parse(slots[best.j].time) + 3_600_000;
+  return {
+    available: true,
+    start: start.time,
+    end: localTime(endMs, tz).iso,
+    startLocal: localTime(Date.parse(start.time), tz).text,
+    endLocal: localTime(endMs, tz).text,
+    predictedWait: low,
+    percentage: start.percentage ?? null,
+    hoursConsidered: slots.length,
+    basis: "Lowest predicted standby wait in today's remaining forecast hours. percentage is ThemeParks.wiki's crowd index for that hour.",
+  };
+}
+
+function toLiveStatus(raw, { parks, now, includeForecast, includeTimes, tz }) {
   const queues = {};
   const otherQueues = {};
   for (const [kind, q] of Object.entries(raw.queue ?? {})) {
@@ -290,7 +405,10 @@ function toLiveStatus(raw, { parks, now, includeForecast, includeTimes }) {
     if (raw.showtimes?.length) out.showtimes = raw.showtimes.map(({ type, startTime, endTime }) => ({ type, start: startTime, end: endTime }));
     if (raw.operatingHours?.length) out.operatingHours = raw.operatingHours.map(({ type, startTime, endTime }) => ({ type, start: startTime, end: endTime }));
   }
-  if (includeForecast && raw.forecast?.length) out.forecast = raw.forecast.map(({ time, waitTime }) => ({ time, waitTime }));
+  if (includeForecast) {
+    if (raw.forecast?.length) out.forecast = raw.forecast.map(({ time, waitTime, percentage }) => ({ time, waitTime, percentage: percentage ?? undefined }));
+    if (raw.entityType === "ATTRACTION") out.bestTimeToRide = bestTimeToRide(raw.forecast, tz || "UTC", now);
+  }
   return out;
 }
 
@@ -326,8 +444,39 @@ function ymd(v, name) {
   return String(v);
 }
 
-function todayIn(tz) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+function todayIn(tz, at = Date.now()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
+}
+
+function tzOffsetMinutes(tz, at) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      .formatToParts(new Date(at))
+      .map((x) => [x.type, x.value]),
+  );
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return Math.round((asUtc - Math.floor(at / 1000) * 1000) / 60_000);
+}
+
+function fmtOffset(min) {
+  const sign = min < 0 ? "-" : "+";
+  const a = Math.abs(min);
+  return `${sign}${String(Math.floor(a / 60)).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
+}
+
+// A park-local wall time ("2026-10-11T16:00") as an instant with the park's offset.
+function localToInstant(wall, tz) {
+  const guess = Date.parse(`${wall.length === 16 ? wall + ":00" : wall}Z`);
+  let off = tzOffsetMinutes(tz, guess);
+  off = tzOffsetMinutes(tz, guess - off * 60_000);
+  return { ms: guess - off * 60_000, iso: `${wall.length === 16 ? wall + ":00" : wall}${fmtOffset(off)}` };
+}
+
+function localTime(ms, tz) {
+  const off = tzOffsetMinutes(tz, ms);
+  const iso = new Date(Math.floor(ms / 1000) * 1000 + off * 60_000).toISOString().slice(0, 19) + fmtOffset(off);
+  const text = new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" }).format(new Date(ms));
+  return { iso, text };
 }
 
 function addDays(day, n) {
@@ -353,6 +502,9 @@ const WITHIN_ARG = {
 };
 
 async function findTool(args) {
+  const mode = args.mode ?? "search";
+  if (mode === "key_status") return { source: SOURCE, mode, ...(await keyStatus()) };
+  if (mode !== "search") throw new ToolError("bad_request", "mode must be search or key_status.");
   const query = typeof args.query === "string" ? args.query.trim() : "";
   const types = list(args.type, ENTITY_TYPES, "type");
   const parent = args.within ? await resolve(args.within) : null;
@@ -370,13 +522,23 @@ async function findTool(args) {
     : query
     ? rank(query, pool).map(entityOut)
     : pool.map((ref) => ({ id: ref.id, name: ref.name, type: ref.type, park: ref.park, slug: ref.slug ?? undefined })).sort((a, b) => a.name.localeCompare(b.name));
+  const shown = matches.slice(0, limit);
+  if (args.include_details) {
+    const n = Math.min(shown.length, DETAILS_MAX);
+    await Promise.all(
+      shown.slice(0, n).map(async (m) => {
+        if (["ATTRACTION", "SHOW", "RESTAURANT"].includes(m.type)) m.details = (await entityDetails(m.id).catch(() => ({}))).details;
+      }),
+    );
+  }
   return {
     source: SOURCE,
     within: parent ? entityHeader(parent) : undefined,
     query: query || undefined,
     scan: global?.scan,
     totalMatched: matches.length,
-    matches: matches.slice(0, limit),
+    detailsFor: args.include_details ? Math.min(shown.length, DETAILS_MAX) : undefined,
+    matches: shown,
   };
 }
 
@@ -393,6 +555,12 @@ async function resolveOrSameName(ref, within) {
 }
 
 async function liveTool(args) {
+  const mode = args.mode ?? "snapshot";
+  if (!["snapshot", "watch"].includes(mode)) throw new ToolError("bad_request", "mode must be snapshot or watch.");
+  if (mode === "watch") {
+    const entity = await resolve(args.entity, args.within);
+    return { source: SOURCE, entity: entityHeader(entity), ...(await watchTool(entity, args, entity.timezone || "UTC", await parkNames())) };
+  }
   const { entity, sameName } = await resolveOrSameName(args.entity, args.within);
   const types = list(args.type, ENTITY_TYPES, "type");
   const statuses = list(args.status, STATUSES, "status");
@@ -414,7 +582,7 @@ async function liveTool(args) {
   const now = Date.now();
   const all = rawItems
     .filter((r) => !types || types.has(r.entityType))
-    .map((r) => toLiveStatus(r, { parks, now, includeForecast, includeTimes }));
+    .map((r) => toLiveStatus(r, { parks, now, includeForecast, includeTimes, tz: data?.timezone ?? entity?.timezone }));
   const counts = Object.fromEntries(STATUSES.map((s) => [s, all.filter((x) => x.status === s).length]));
   const matched = all
     .filter((x) => !statuses || statuses.has(x.status))
@@ -425,7 +593,7 @@ async function liveTool(args) {
     source: SOURCE,
     entity: sameName
       ? { name: args.entity, type: "SAME_NAME_GROUP", matches: sameName.map(({ id, name, type, park, destination }) => ({ id, name, type, park, destination })) }
-      : { ...entityHeader(entity), timezone: data?.timezone ?? entity.timezone ?? undefined },
+      : { ...entityHeader(entity), timezone: data?.timezone ?? entity.timezone ?? undefined, details: args.include_details === false ? undefined : entity.details },
     fetchedAt,
     cached,
     staleBecause,
@@ -453,10 +621,14 @@ async function scheduleTool(args) {
   const months = [...new Set(Array.from({ length: days }, (_, i) => addDays(from, i).slice(0, 7)))];
   const responses = await Promise.all(months.map((m) => api(`/entity/${entity.id}/schedule/${m.slice(0, 4)}/${m.slice(5, 7)}`)));
   const byDate = new Map();
-  for (const { data } of responses) {
-    for (const s of data?.schedule ?? []) {
+  const rows = responses.flatMap(({ data }) => [
+    ...(data?.schedule ?? []).map((s) => ({ s, park: undefined })),
+    ...(data?.parks ?? []).flatMap((pk) => (pk.schedule ?? []).map((s) => ({ s, park: pk.name }))),
+  ]);
+  {
+    for (const { s, park } of rows) {
       if (s.date < from || s.date > to || (types && !types.has(s.type))) continue;
-      const entry = { type: s.type, open: s.openingTime, close: s.closingTime, description: s.description };
+      const entry = { park, type: s.type, open: s.openingTime, close: s.closingTime, description: s.description };
       if (includePurchases && s.purchases?.length) {
         entry.purchases = s.purchases.map((p) => ({ name: p.name, type: p.type, price: p.price?.formatted ?? null, available: p.available ?? null }));
       }
@@ -466,7 +638,7 @@ async function scheduleTool(args) {
   }
   const scheduleDays = [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, entries]) => ({ date, entries: entries.sort((a, b) => String(a.open).localeCompare(String(b.open))) }));
+    .map(([date, entries]) => ({ date, entries: entries.sort((a, b) => String(a.park ?? "").localeCompare(String(b.park ?? "")) || String(a.open).localeCompare(String(b.open))) }));
   const out = {
     source: SOURCE,
     entity: entityHeader(entity),
@@ -481,7 +653,7 @@ async function scheduleTool(args) {
     const raw = live.data?.liveData?.find((r) => r.id === entity.id);
     out.note = "No published schedule for this entity. Today's times from live data are shown instead.";
     out.todayFromLive = raw
-      ? toLiveStatus(raw, { parks: await parkNames(), now: Date.now(), includeForecast: false, includeTimes: true })
+      ? toLiveStatus(raw, { parks: await parkNames(), now: Date.now(), includeForecast: false, includeTimes: true, tz })
       : null;
   }
   return out;
@@ -529,47 +701,443 @@ const UPTIME_SORTS = {
   name: (a, b) => a.name.localeCompare(b.name),
 };
 
+// Plan: what the key (or no key) unlocks. One /v1/me read, cached 10 min.
+const KEYLESS_PLAN = { keyConfigured: false, tier: "keyless", historyDays: 7, historyAllArchive: false, historyEarliestDate: null, historyCallsPerHour: 60, source: "keyless defaults" };
+const ME_TTL_MS = 10 * 60_000;
+const DAILY_MAX_DAYS = 3660;
+const RAW_ENTITY_MAX_DAYS = 31;
+const PARK_DAILY_MAX_PAGES = 15;
+let meMemo = null;
+
+async function plan() {
+  if (!apiKey()) return KEYLESS_PLAN;
+  if (meMemo && Date.now() - meMemo.at < ME_TTL_MS) return meMemo.plan;
+  try {
+    const { data } = await api("/me");
+    const p = {
+      keyConfigured: true,
+      tier: data?.tier ?? "unknown",
+      historyDays: data?.historyAllArchive ? null : data?.historyDays ?? null,
+      historyAllArchive: Boolean(data?.historyAllArchive),
+      historyEarliestDate: data?.historyEarliestDate ?? null,
+      historyCallsPerHour: data?.historyRateLimit?.unmetered ? null : data?.historyRateLimit?.limit ?? null,
+      rateLimit: data?.rateLimit ?? null,
+      historyRateLimit: data?.historyRateLimit ?? null,
+      source: "/v1/me",
+    };
+    meMemo = { at: Date.now(), plan: p };
+    return p;
+  } catch (err) {
+    return { ...KEYLESS_PLAN, keyConfigured: true, tier: "unknown", historyDays: 30, source: "fallback", planError: err instanceof ToolError ? `${err.code}: ${err.message}` : String(err) };
+  }
+}
+
+function windowDays(p) {
+  return p.historyAllArchive ? DAILY_MAX_DAYS : Math.min(DAILY_MAX_DAYS, p.historyDays ?? 7);
+}
+
+function windowHint(p) {
+  return p.keyConfigured
+    ? `Your ${p.tier} plan reaches back ${p.historyAllArchive ? "to the full archive" : `${p.historyDays} days`}${p.historyEarliestDate ? ` (earliest ${p.historyEarliestDate})` : ""}.`
+    : `Keyless history reaches back 7 days at 60 history calls per hour. An optional free THEMEPARKS_API_KEY (${KEY_SIGNUP_URL}) extends it to 30 days and 600 calls per hour.`;
+}
+
+async function keyStatus() {
+  if (!apiKey()) {
+    return {
+      keyConfigured: false,
+      message: "No THEMEPARKS_API_KEY is set. Everything works keyless: live, schedules, and 7 days of history at 60 history calls per hour. A key is optional.",
+      plan: KEYLESS_PLAN,
+      getAKey: { signup: KEY_SIGNUP_URL, createKey: KEY_CREATE_URL, steps: "Create a free account, then generate a key on your profile page and set THEMEPARKS_API_KEY." },
+      lastHistoryBudget: lastHistoryBudget ?? undefined,
+    };
+  }
+  meMemo = null;
+  const p = await plan();
+  if (p.source === "fallback") {
+    return { keyConfigured: true, valid: false, message: `THEMEPARKS_API_KEY is set but /v1/me failed (${p.planError}). Check the key at ${KEY_CREATE_URL}.` };
+  }
+  return { keyConfigured: true, valid: true, message: `Key accepted. Plan: ${p.tier}. ${windowHint(p)}`, plan: p, lastHistoryBudget: lastHistoryBudget ?? undefined };
+}
+
+// Minute-level history: status intervals, wait timeline, opening freshness
+const WALL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+function instantArg(v, tz, name) {
+  const t = String(v).trim();
+  if (INSTANT.test(t)) return { ms: Date.parse(t), iso: t };
+  if (WALL.test(t)) return localToInstant(t, tz);
+  throw new ToolError("bad_request", `${name} must be a park-local time like 2026-10-11T16:00, an RFC 3339 instant with an offset, or (for a whole day) YYYY-MM-DD.`);
+}
+
+function standbyOf(row) {
+  return row?.queue?.STANDBY ? row.queue.STANDBY.waitTime ?? null : undefined;
+}
+
+function freshness(opening, tz) {
+  if (!opening) return null;
+  const start = Date.parse(opening.time);
+  const seen = opening.observedAt ? Date.parse(opening.observedAt) : null;
+  return {
+    status: opening.status ?? null,
+    standbyWait: standbyOf(opening) ?? null,
+    observedAt: opening.observedAt ?? null,
+    observedAtLocal: seen ? localTime(seen, tz).text : null,
+    carriedInMinutes: seen !== null ? Math.round((start - seen) / 60_000) : null,
+    staleCarryIn: seen !== null && start - seen > STALE_AFTER_MINUTES * 60_000 ? true : undefined,
+    degraded: opening.degraded ? true : undefined,
+    degradedReason: opening.degradedReason ?? undefined,
+    note: opening.degraded
+      ? "ThemeParks.wiki could not look far enough back; the opening state may be incomplete. Ask again in a minute."
+      : seen === null
+      ? "No reading before this range; the opening state is unknown."
+      : undefined,
+  };
+}
+
+function timeline(opening, rows, startMs, endMs, tz) {
+  const events = [{ time: startMs, status: opening?.status ?? null, wait: standbyOf(opening) }]
+    .concat(rows.map((r) => ({ time: Date.parse(r.time), status: r.status ?? null, wait: standbyOf(r) })))
+    .filter((e) => e.time <= endMs);
+  const intervals = [];
+  for (const e of events) {
+    const last = intervals.at(-1);
+    if (last && last.status === e.status) continue;
+    if (last) last.endMs = e.time;
+    intervals.push({ status: e.status, startMs: e.time, endMs });
+  }
+  const spans = intervals.map((iv) => ({
+    status: iv.status ?? "UNKNOWN",
+    start: localTime(iv.startMs, tz).iso,
+    end: localTime(iv.endMs, tz).iso,
+    startLocal: localTime(iv.startMs, tz).text,
+    endLocal: localTime(iv.endMs, tz).text,
+    minutes: Math.round((iv.endMs - iv.startMs) / 60_000),
+    openEnded: iv.endMs === endMs ? true : undefined,
+  }));
+  const minutesBy = {};
+  for (const s of spans) minutesBy[s.status] = (minutesBy[s.status] ?? 0) + s.minutes;
+  // A null wait (ride down or closed) ends the previous wait segment.
+  const segs = [];
+  for (const e of events) {
+    if (e.wait === undefined) continue;
+    if (segs.length && segs.at(-1).wait === e.wait) continue;
+    segs.push({ wait: e.wait, ms: e.time });
+  }
+  let weighted = 0;
+  let span = 0;
+  segs.forEach((g, i) => {
+    if (g.wait === null) return;
+    const until = i + 1 < segs.length ? segs[i + 1].ms : endMs;
+    weighted += g.wait * (until - g.ms);
+    span += until - g.ms;
+  });
+  const waits = segs.filter((g) => g.wait !== null).map((g) => {
+    const lt = localTime(g.ms, tz);
+    return { time: lt.iso, timeLocal: lt.text, wait: g.wait, ms: g.ms };
+  });
+  const values = waits.map((w) => w.wait);
+  const peak = waits.reduce((m, w) => (!m || w.wait > m.wait ? w : m), null);
+  const low = waits.reduce((m, w) => (!m || w.wait < m.wait ? w : m), null);
+  return {
+    intervals: spans,
+    minutesByStatus: minutesBy,
+    waitTimeline: values.length
+      ? {
+          points: waits.length,
+          min: Math.min(...values),
+          max: Math.max(...values),
+          timeWeightedMean: span ? Math.round(weighted / span) : null,
+          first: values[0],
+          last: values.at(-1),
+          peakAt: peak?.timeLocal,
+          lowAt: low?.timeLocal,
+          changes: waits.map(({ time, timeLocal, wait }) => ({ time, timeLocal, wait })),
+        }
+      : null,
+  };
+}
+
+async function historyCall(path, p) {
+  try {
+    return await api(path);
+  } catch (err) {
+    if (err instanceof ToolError && ["history_window_exceeded", "rate_limited"].includes(err.code)) err.extra.hint = windowHint(p);
+    throw err;
+  }
+}
+
+function budgetReport(res, p) {
+  const b = res.historyBudget ?? null;
+  return {
+    historyBudget: b ?? undefined,
+    historyBudgetNote: b
+      ? undefined
+      : res.cached
+      ? "Served from cache; no history budget spent."
+      : p.keyConfigured
+      ? "No RateLimit-History headers on this response. themeparks_find mode=key_status reports the exact remaining budget."
+      : "ThemeParks.wiki sends no RateLimit-History headers on keyless success responses. Keyless budget: 60 history calls per hour per IP; this call used 1.",
+  };
+}
+
+async function changesTool(entity, args, tz, p, head) {
+  const isPark = entity.type === "PARK";
+  const now = Date.now();
+  const date = ymd(args.date, "date");
+  let startMs, endMs, path;
+  if (args.from && !YMD.test(String(args.from))) {
+    const a = instantArg(args.from, tz, "from");
+    const b = args.to ? instantArg(args.to, tz, "to") : { ms: now, iso: localTime(now, tz).iso };
+    if (b.ms <= a.ms) throw new ToolError("bad_request", "to must be after from.");
+    if (isPark && b.ms - a.ms > 26 * 3_600_000) throw new ToolError("bad_request", "A park-wide history covers one park-local day. Pass date=YYYY-MM-DD, or a range under a day.");
+    if (!isPark && b.ms - a.ms > RAW_ENTITY_MAX_DAYS * 86_400_000) throw new ToolError("bad_request", `Minute-level history spans at most ${RAW_ENTITY_MAX_DAYS} days per call.`);
+    startMs = a.ms;
+    endMs = Math.min(b.ms, now);
+    path = `/entity/${entity.id}/history?from=${encodeURIComponent(a.iso)}&to=${encodeURIComponent(b.iso)}`;
+  } else {
+    const day = date ?? ymd(args.from, "from") ?? todayIn(tz);
+    const last = isPark ? day : ymd(args.to, "to") ?? day;
+    if (daysBetween(day, last) < 0) throw new ToolError("bad_request", "from must be on or before to.");
+    if (daysBetween(day, last) >= RAW_ENTITY_MAX_DAYS) throw new ToolError("bad_request", `Minute-level history spans at most ${RAW_ENTITY_MAX_DAYS} days per call.`);
+    startMs = localToInstant(`${day}T00:00`, tz).ms;
+    endMs = Math.min(localToInstant(`${addDays(last, 1)}T00:00`, tz).ms, now);
+    path = day === last ? `/entity/${entity.id}/history?date=${day}` : `/entity/${entity.id}/history?from=${day}&to=${last}`;
+  }
+  const earliest = p.historyEarliestDate ?? addDays(todayIn(tz), 1 - windowDays(p));
+  if (!p.historyAllArchive && todayIn(tz, startMs) < earliest) {
+    throw new ToolError("history_window_exceeded", `That range starts before ${earliest}, the earliest day your access reaches.`, { earliestAllowedDate: earliest, hint: windowHint(p) });
+  }
+  const res = await historyCall(path, p);
+  const { data } = res;
+  const out = {
+    ...head,
+    granularity: "changes",
+    range: { from: localTime(startMs, tz).iso, to: localTime(endMs, tz).iso, fromLocal: localTime(startMs, tz).text, toLocal: localTime(endMs, tz).text },
+    fetchedAt: res.fetchedAt,
+    cached: res.cached,
+    ...budgetReport(res, p),
+  };
+  if (!Array.isArray(data?.entities)) {
+    return { ...out, opening: freshness(data?.opening, tz), changeRows: data?.history?.length ?? 0, ...timeline(data?.opening, data?.history ?? [], startMs, endMs, tz) };
+  }
+  const want = list(args.status, STATUSES, "status") ?? new Set(["DOWN"]);
+  const types = list(args.type, ENTITY_TYPES, "type") ?? new Set(["ATTRACTION"]);
+  const limit = int(args.limit, { min: 1, max: 1000, def: 200, name: "limit" });
+  const events = [];
+  const perEntity = [];
+  let degraded = 0;
+  for (const e of data.entities) {
+    if (!types.has(e.entityType)) continue;
+    if (e.opening?.degraded) degraded++;
+    const t = timeline(e.opening, e.history ?? [], startMs, endMs, tz);
+    const hits = t.intervals.filter((s) => want.has(s.status));
+    for (const s of hits) events.push({ id: e.id, name: e.name, ...s });
+    if (hits.length) perEntity.push({ id: e.id, name: e.name, spans: hits.length, minutes: hits.reduce((n, s) => n + s.minutes, 0) });
+  }
+  events.sort((a, b) => a.start.localeCompare(b.start));
+  perEntity.sort((a, b) => b.minutes - a.minutes);
+  return {
+    ...out,
+    statuses: [...want],
+    entitiesInPark: data.entities.length,
+    entitiesWithDegradedOpening: degraded || undefined,
+    totalEvents: events.length,
+    returned: Math.min(limit, events.length),
+    byEntity: perEntity,
+    events: events.slice(0, limit),
+  };
+}
+
 async function uptimeTool(args) {
   const entity = await resolve(args.entity, args.within);
   const tz = entity.timezone || "UTC";
-  const isGroup = ["PARK", "DESTINATION"].includes(entity.type);
+  const granularity = args.granularity ?? "daily";
+  if (!["daily", "changes", "coverage"].includes(granularity)) throw new ToolError("bad_request", "granularity must be daily, changes, or coverage.");
+  const p = await plan();
+  const access = { tier: p.tier, keyConfigured: p.keyConfigured, historyDays: p.historyAllArchive ? "all" : p.historyDays, historyEarliestDate: p.historyEarliestDate ?? undefined, source: p.source };
+  const head = { source: SOURCE, entity: entityHeader(entity), timezone: tz, access };
+  if (granularity === "coverage") {
+    const res = await api(`/entity/${entity.id}/history/coverage`);
+    return { ...head, granularity, fetchedAt: res.fetchedAt, cached: res.cached, note: "Recording runs 2-3 days behind live data. Your plan limits how far back you can read, not what exists.", coverage: res.data };
+  }
+  if (granularity === "changes") {
+    if (entity.type === "DESTINATION") throw new ToolError("bad_request", "Minute-level history works for a ride, show, or park, not a whole resort.");
+    return changesTool(entity, args, tz, p, head);
+  }
+  const maxDays = windowDays(p);
   const to = ymd(args.to, "to") ?? todayIn(tz);
-  const from = ymd(args.from, "from") ?? addDays(to, 1 - int(args.days, { min: 1, max: isGroup ? 31 : 366, def: 7, name: "days" }));
+  const from = ymd(args.from, "from") ?? addDays(to, 1 - int(args.days, { min: 1, max: maxDays, def: 7, name: "days" }));
   if (daysBetween(from, to) < 0) throw new ToolError("bad_request", "from must be on or before to.");
+  if (daysBetween(from, to) >= DAILY_MAX_DAYS) throw new ToolError("bad_request", `Daily history spans at most ${DAILY_MAX_DAYS} days per call.`);
   const sort = args.sort ?? "down_desc";
   if (!UPTIME_SORTS[sort]) throw new ToolError("bad_request", `sort must be one of ${Object.keys(UPTIME_SORTS).join(", ")}.`);
   const types = list(args.type, ENTITY_TYPES, "type") ?? new Set(["ATTRACTION"]);
   const limit = int(args.limit, { min: 1, max: 500, def: 25, name: "limit" });
-
-  let res;
-  try {
-    res = await api(`/entity/${entity.id}/history/daily?from=${from}&to=${to}`);
-  } catch (err) {
-    if (err instanceof ToolError && err.code === "history_window_exceeded" && !apiKey()) {
-      err.extra.hint = "Keyless history reaches back 7 days. A free THEMEPARKS_API_KEY extends it to 30.";
-    }
-    throw err;
-  }
+  const res = await historyCall(`/entity/${entity.id}/history/daily?from=${from}&to=${to}`, p);
   const { data, fetchedAt, cached } = res;
-  const head = {
-    source: SOURCE,
-    entity: entityHeader(entity),
+  const base = {
+    ...head,
+    granularity: "daily",
     range: data?.range ?? { from, to },
     timezone: data?.timezone ?? tz,
     fetchedAt,
     cached,
+    ...budgetReport(res, p),
     method: "uptimePct = operatingMinutes / (operatingMinutes + downMinutes), inside published park hours when the park published any. Unknown and CLOSED minutes are excluded. Today counts elapsed minutes only.",
   };
   if (Array.isArray(data?.entities)) {
-    const rows = data.entities
-      .filter((e) => types.has(e.entityType))
-      .map((e) => ({ id: e.id, name: e.name, type: e.entityType, ...summarize((e.days ?? []).map(toDailyUptime)) }))
+    const byId = new Map();
+    const absorb = (d) => {
+      for (const e of d?.entities ?? []) {
+        const cur = byId.get(e.id) ?? { id: e.id, name: e.name, type: e.entityType, days: [] };
+        cur.days.push(...(e.days ?? []));
+        byId.set(e.id, cur);
+      }
+    };
+    absorb(data);
+    let next = data.next ?? null;
+    let pages = 1;
+    while (next && pages < PARK_DAILY_MAX_PAGES) {
+      const rel = String(next).replace(/^https?:\/\/[^/]+\/v1/, "");
+      const more = await historyCall(rel, p);
+      absorb(more.data);
+      next = more.data?.next ?? null;
+      pages++;
+    }
+    const rows = [...byId.values()]
+      .filter((e) => types.has(e.type))
+      .map((e) => ({ id: e.id, name: e.name, type: e.type, ...summarize(e.days.map(toDailyUptime)) }))
       .filter((r) => r.daysWithData > 0)
       .sort(UPTIME_SORTS[sort]);
-    return { ...head, totalEntities: rows.length, returned: Math.min(limit, rows.length), entities: rows.slice(0, limit), next: data.next ?? null };
+    return { ...base, pages, totalEntities: rows.length, returned: Math.min(limit, rows.length), entities: rows.slice(0, limit), next: next ?? null, truncated: next ? `Stopped after ${pages} pages; narrow the range.` : undefined };
   }
   const daily = (data?.days ?? []).map(toDailyUptime);
-  return { ...head, firstRecordedAt: data?.coverage?.firstRecordedAt ?? null, summary: summarize(daily), days: daily };
+  return { ...base, firstRecordedAt: data?.coverage?.firstRecordedAt ?? null, summary: summarize(daily), days: daily };
+}
+
+// Watch: bounded WebSocket push (key required). Free plan: 1 connection, 1 subscription.
+const WS_URL = "wss://api.themeparks.wiki/v1/live";
+const WATCH_MAX_SECONDS = 120;
+let WebSocketImpl = globalThis.WebSocket;
+function setWebSocketImpl(impl) {
+  WebSocketImpl = impl;
+}
+
+async function watchTool(entity, args, tz, parks) {
+  if (!apiKey()) {
+    throw new ToolError("key_required", "Live push (mode=watch) needs THEMEPARKS_API_KEY. Without a key, call themeparks_live again to poll; data refreshes about once a minute.", { getAKey: KEY_SIGNUP_URL });
+  }
+  if (typeof WebSocketImpl !== "function") {
+    throw new ToolError("unsupported_runtime", `mode=watch needs a global WebSocket: Node 22+, or Node 20.10+ started with --experimental-websocket. This server runs Node ${process.versions.node}. Polling themeparks_live still works.`);
+  }
+  const seconds = int(args.watch_seconds, { min: 5, max: WATCH_MAX_SECONDS, def: 60, name: "watch_seconds" });
+  const untilStatus = list(args.until_status, STATUSES, "until_status");
+  const untilWait = args.until_wait_at_most === undefined ? null : int(args.until_wait_at_most, { min: 0, max: 1440, def: null, name: "until_wait_at_most" });
+  const types = list(args.type, ENTITY_TYPES, "type");
+  const single = !["DESTINATION", "PARK"].includes(entity.type);
+  const started = Date.now();
+  const snapshot = [];
+  const updates = [];
+  let welcome = null;
+  let subscribed = null;
+  let stopReason = "time_limit";
+  let triggeredBy = null;
+  let error = null;
+  const hasCondition = Boolean(untilStatus) || untilWait !== null;
+  const matches = (live) => {
+    if (single && live.id !== entity.id) return false;
+    if (untilStatus && untilStatus.has(live.status)) return true;
+    return untilWait !== null && live.standbyWait !== null && live.standbyWait <= untilWait;
+  };
+  const toLive = (raw) => toLiveStatus(raw, { parks, now: Date.now(), includeForecast: false, includeTimes: false, tz });
+
+  await new Promise((resolveWatch) => {
+    let ws;
+    let done = false;
+    const finish = (reason) => {
+      if (done) return;
+      done = true;
+      if (reason) stopReason = reason;
+      clearTimeout(timer);
+      try {
+        ws?.close(1000);
+      } catch {}
+      resolveWatch();
+    };
+    const timer = setTimeout(() => finish("time_limit"), seconds * 1000);
+    try {
+      ws = new WebSocketImpl(WS_URL, ["preview"]);
+    } catch (err) {
+      error = { code: "ws_connect_failed", message: String(err?.message || err) };
+      finish("error");
+      return;
+    }
+    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", apiKey: apiKey() }));
+    ws.onmessage = (ev) => {
+      let f;
+      try {
+        f = JSON.parse(typeof ev.data === "string" ? ev.data : Buffer.from(ev.data).toString("utf8"));
+      } catch {
+        return;
+      }
+      if (f.type === "welcome") {
+        welcome = { protocol: f.data?.protocol ?? null, limits: f.data?.limits ?? null, heartbeatIntervalMs: f.data?.heartbeatIntervalMs ?? null };
+        const sub = { type: "subscribe", channel: entity.id, snapshot: true };
+        if (types && types.size === 1) sub.filter = [...types][0];
+        ws.send(JSON.stringify(sub));
+      } else if (f.type === "subscribed") {
+        subscribed = { subscriptionId: f.data?.subscriptionId ?? null, name: f.data?.name ?? null, entityType: f.data?.entityType ?? null };
+      } else if (f.type === "snapshot") {
+        for (const raw of f.data ?? []) if (!types || types.has(raw.entityType)) snapshot.push(toLive(raw));
+        if (f.final !== false && hasCondition && args.stop_if_already_met) {
+          const hit = snapshot.find(matches);
+          if (hit) {
+            triggeredBy = { ...hit, fromSnapshot: true };
+            finish("condition_met");
+          }
+        }
+        if (f.final !== false && !hasCondition && args.snapshot_only) finish("snapshot_only");
+      } else if (f.type === "update") {
+        if (types && !types.has(f.data?.entityType)) return;
+        const live = toLive(f.data ?? {});
+        const at = localTime(f.ts ?? Date.now(), tz);
+        const before = [...snapshot, ...updates].filter((u) => u.id === live.id).at(-1);
+        updates.push({ at: at.iso, atLocal: at.text, ...live, previousStatus: before?.status, previousWait: before?.standbyWait });
+        if (hasCondition && matches(live)) {
+          triggeredBy = updates.at(-1);
+          finish("condition_met");
+        }
+      } else if (f.type === "error") {
+        error = { code: f.data?.code ?? null, message: f.data?.message ?? "error", retryable: f.data?.retryable ?? null };
+        if (!f.data?.retryable) finish("error");
+      }
+    };
+    ws.onerror = () => {
+      error = error ?? { code: "ws_error", message: "WebSocket error" };
+    };
+    ws.onclose = (ev) => {
+      const codes = { 3000: "Authentication failed (check THEMEPARKS_API_KEY)", 3001: "Query-string credentials rejected", 3003: "Insufficient permissions", 4029: "Connection cap for your plan reached (free plan: 1 connection). Close other ThemeParks.wiki sockets and retry." };
+      if (!done && ev?.code && ev.code !== 1000) error = { code: ev.code, message: codes[ev.code] ?? `closed ${ev.code}` };
+      finish(error ? "error" : "closed");
+    };
+  });
+
+  if (error && !welcome) throw new ToolError("watch_failed", error.message, { closeCode: error.code });
+  return {
+    mode: "watch",
+    watchedSeconds: Math.round((Date.now() - started) / 1000),
+    stopReason,
+    triggeredBy: triggeredBy ?? undefined,
+    connection: welcome ?? undefined,
+    subscription: subscribed ?? undefined,
+    error: error ?? undefined,
+    snapshot: single ? snapshot.find((s) => s.id === entity.id) ?? snapshot[0] ?? null : { entities: snapshot.length, counts: Object.fromEntries(STATUSES.map((s) => [s, snapshot.filter((x) => x.status === s).length])) },
+    updateCount: updates.length,
+    updates: updates.slice(-200),
+    note: "Preview WebSocket (wss://api.themeparks.wiki/v1/live): one connection, one subscription, closed before returning.",
+  };
 }
 
 const TOOL_REGISTRY = {
@@ -583,13 +1151,15 @@ const TOOL_REGISTRY = {
         within: WITHIN_ARG,
         type: { type: "string", description: `Filter by entity type, comma-separated: ${ENTITY_TYPES.join(", ")}.` },
         limit: { type: "integer", description: "Max matches (default 10 with query, 100 for a listing)." },
+        include_details: { type: "boolean", description: `Add ride details per match (attractionType, minimumHeight/maximumHeight in cm, mayGetWet, location, other park tags). One extra call per match, first ${DETAILS_MAX} only. Default false.` },
+        mode: { type: "string", enum: ["search", "key_status"], description: "search (default). key_status reports whether THEMEPARKS_API_KEY is set and, if so, the plan, history window, and remaining budgets from /v1/me. The key itself is never shown." },
       },
     },
     handler: findTool,
   },
   themeparks_live: {
     description:
-      "Live status and waits for a park, resort, or single ride/show: status OPERATING|DOWN|CLOSED|REFURBISHMENT, standby, single rider, paid standby, virtual queue and Lightning Lane return windows, boarding groups, lastUpdated. Filter by status, type, and wait range. Updates about once a minute.",
+      "Live status and waits for a park, resort, or single ride/show: status OPERATING|DOWN|CLOSED|REFURBISHMENT, standby, single rider, paid standby, virtual queue and Lightning Lane return windows, boarding groups, lastUpdated. A single ride also gets details (height limits, mayGetWet, type) and bestTimeToRide: today's lowest predicted wait window with crowd percentage (forecasts exist only at Walt Disney World and Disneyland Resort). mode=watch (optional key) waits for pushed changes, e.g. until a DOWN ride reopens.",
     inputSchema: {
       type: "object",
       required: ["entity"],
@@ -604,6 +1174,13 @@ const TOOL_REGISTRY = {
         limit: { type: "integer", description: "Max items (default 30)." },
         include_forecast: { type: "boolean", description: "Include the park's hourly wait forecast when published. Default true for a single ride, false for a park." },
         include_times: { type: "boolean", description: "Include today's showtimes and operating hours. Default true for a single entity, false for a park." },
+        include_details: { type: "boolean", description: "For a single ride: include details (attractionType, height limits in cm, mayGetWet, location). Default true." },
+        mode: { type: "string", enum: ["snapshot", "watch"], description: "snapshot (default) reads current state. watch (needs THEMEPARKS_API_KEY and Node 22+) opens the push WebSocket, takes a snapshot, then collects changes for watch_seconds or until a condition is met. Free plan: one connection at a time." },
+        watch_seconds: { type: "integer", description: `watch: how long to listen, 5-${WATCH_MAX_SECONDS} seconds (default 60).` },
+        until_status: { type: "string", description: "watch: stop early when a watched entity reaches one of these statuses, e.g. OPERATING." },
+        until_wait_at_most: { type: "integer", description: "watch: stop early when a standby wait drops to this many minutes or less." },
+        stop_if_already_met: { type: "boolean", description: "watch: return at once if the snapshot already meets the condition. Default false." },
+        snapshot_only: { type: "boolean", description: "watch without a condition: return right after the snapshot. Default false." },
       },
     },
     handler: liveTool,
@@ -627,19 +1204,22 @@ const TOOL_REGISTRY = {
   },
   themeparks_uptime: {
     description:
-      "Ride uptime history from ThemeParks.wiki daily summaries: uptime %, minutes operating and down, first open and last close, and standby wait stats (p50/mean/p90/max) per day. For a park, ranks its rides by downtime. Keyless history covers the last 7 days.",
+      "Ride history. granularity=daily (default): uptime %, minutes operating/down, first open/last close, wait stats per day; a park ranks its rides by downtime. granularity=changes: minute-level status intervals (DOWN/OPERATING spans in park time), wait timeline, and opening freshness for a ride over a time range (from/to like 2026-10-11T16:00 park time), or for a park on one date every event of a status (default DOWN). granularity=coverage: how far back data exists. Keyless reaches 7 days (60 history calls/hour); a key extends it to the plan's window.",
     inputSchema: {
       type: "object",
       required: ["entity"],
       properties: {
         entity: ENTITY_ARG,
         within: WITHIN_ARG,
-        days: { type: "integer", description: "Days ending today (default 7). Keyless window is 7 days; a free key allows 30." },
-        from: { type: "string", description: "Start date YYYY-MM-DD (overrides days)." },
-        to: { type: "string", description: "End date YYYY-MM-DD (default today in the park's timezone)." },
-        type: { type: "string", description: "For a park: entity types to rank, comma-separated. Default ATTRACTION." },
+        granularity: { type: "string", enum: ["daily", "changes", "coverage"], description: "daily (default), changes (minute-level), or coverage." },
+        days: { type: "integer", description: "daily: days ending today (default 7, up to your plan window: 7 keyless, 30 free key, more on paid plans)." },
+        date: { type: "string", description: "changes: one park-local day YYYY-MM-DD (default today). Required form for a park." },
+        from: { type: "string", description: "daily: start YYYY-MM-DD. changes: YYYY-MM-DD, or a park-local time 2026-10-11T16:00, or an RFC 3339 instant." },
+        to: { type: "string", description: "daily: end YYYY-MM-DD (default today). changes: end time (exclusive) in the same form as from; default now." },
+        status: { type: "string", description: "changes on a park: statuses to list as events, comma-separated (default DOWN)." },
+        type: { type: "string", description: "For a park: entity types to include, comma-separated. Default ATTRACTION." },
         sort: { type: "string", enum: Object.keys(UPTIME_SORTS), description: "For a park: default down_desc." },
-        limit: { type: "integer", description: "For a park: max rides (default 25)." },
+        limit: { type: "integer", description: "For a park: max rides (daily, default 25) or events (changes, default 200)." },
       },
     },
     handler: uptimeTool,
@@ -654,10 +1234,10 @@ async function callTool(name, args) {
   const tool = TOOL_REGISTRY[name];
   if (!tool) return { isError: true, payload: { error: "unknown_tool", message: `Unknown tool ${name}.` } };
   try {
-    return { isError: false, payload: await tool.handler(args ?? {}) };
+    return { isError: false, payload: { ...(await tool.handler(args ?? {})), attribution: ATTRIBUTION } };
   } catch (err) {
-    if (err instanceof ToolError) return { isError: true, payload: { error: err.code, message: err.message, ...err.extra } };
-    return { isError: true, payload: { error: "internal_error", message: err?.message || String(err) } };
+    if (err instanceof ToolError) return { isError: true, payload: { error: err.code, message: err.message, ...err.extra, attribution: ATTRIBUTION } };
+    return { isError: true, payload: { error: "internal_error", message: err?.message || String(err), attribution: ATTRIBUTION } };
   }
 }
 
@@ -762,4 +1342,4 @@ if (startedAsMain()) {
   stdin.resume();
 }
 
-export { SERVER_INFO, TOOL_REGISTRY, QUEUE_FIELDS, listTools, callTool, normalize, score, rank, toLiveStatus, toDailyUptime, uptimePct };
+export { SERVER_INFO, TOOL_REGISTRY, QUEUE_FIELDS, ATTRIBUTION, listTools, callTool, normalize, score, rank, toLiveStatus, toDailyUptime, uptimePct, bestTimeToRide, timeline, localToInstant, localTime, rideDetails, setWebSocketImpl };

@@ -1,8 +1,8 @@
 {
   "name": "themeparks-web",
   "displayName": "Theme Parks Web",
-  "version": "0.1.1",
-  "description": "Theme park live ride status, wait times, virtual queues, park hours, and ride uptime history from the free ThemeParks.wiki API. Keyless. Unofficial; not affiliated with ThemeParks.wiki or any park.",
+  "version": "0.1.2",
+  "description": "Theme park live ride status, wait times, virtual queues, ride details, best time to ride, park hours, and minute-level ride downtime history from the free ThemeParks.wiki API. Works keyless; an optional free key extends history to 30 days and enables live push. Powered by ThemeParks.wiki. Unofficial; not affiliated with ThemeParks.wiki or any park.",
   "author": {
     "name": "TheAbsentTourist",
     "email": "chucktastictime@gmail.com",
@@ -28,7 +28,8 @@
       "THEMEPARKS_API_KEY": {
         "type": "string",
         "title": "ThemeParks.wiki API key (optional)",
-        "description": "Optional. Leave blank to run keyless; every tool works without it. A free key from https://www.themeparks.wiki/api raises the history budget from 60 to 600 calls per hour and the history window from 7 to 30 days. Sent only to api.themeparks.wiki as the x-api-key header. Never commit a key."
+        "description": "Optional. Leave blank and every tool still works keyless (7 days of history, 60 history calls per hour). A free key extends history to 30 days and 600 calls per hour, and enables live push (themeparks_live mode=watch). Create a free account at https://www.themeparks.wiki/register, then generate a key on https://www.themeparks.wiki/profile. Sent only to api.themeparks.wiki; never logged or shown.",
+        "secret": true
       }
     }
   },
