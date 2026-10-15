@@ -4,7 +4,19 @@
 
 ## 0.1.4 results
 
-Filled in after the offline suites and the keyless live smoke on this run.
+Run on 2026-10-15, about 11:53 AM ET, Linux, Node v22.14.0. Keyless live smoke only (no `THEMEPARKS_API_KEY` in this run).
+
+| Suite | Result |
+|---|---|
+| `node --check server.mjs` | PASS |
+| `npm run mcp-path` | PASS (version 0.1.4) |
+| `npm run offline` (7) | PASS |
+| `npm run offline-regression` (6) | PASS |
+| `npm run offline-keyed` (15, mocked plans and WebSocket) | PASS |
+| `npm run offline-audit` (14: search errors, stdio, cache grace, redirects, dates, DST, watch, page cap, clamp note, hyphenated names, retryAfter) | PASS |
+| `npm run smoke` keyless live | 50/50 PASS |
+
+`initialize` reported `themeparks-web 0.1.4`. The keyless window check still returns `history_window_exceeded` for an explicit range past 7 days. NightFlight Oct 11, 4-6 PM ET still reads DOWN 7, OPERATING 42, DOWN 22, OPERATING 48. Keyed live checks (plans above free, park daily `next` paging, watch close 4029) stay covered by the mocked keyed suite.
 
 ## 0.1.3 record
 
