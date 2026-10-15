@@ -1,4 +1,26 @@
-# VERIFY: themeparks-web 0.1.3
+# VERIFY: themeparks-web 0.1.4
+
+0.1.4 in `plugin.json`, `.cursor-plugin/plugin.json`, `package.json`, server `serverInfo` and User-Agent, skill, README, CHANGELOG-0.1.4.md, and this file. `scripts/mcp-path-test.mjs` enforces it.
+
+## 0.1.4 results
+
+Run on 2026-10-15, about 11:53 AM ET, Linux, Node v22.14.0. Keyless live smoke only (no `THEMEPARKS_API_KEY` in this run).
+
+| Suite | Result |
+|---|---|
+| `node --check server.mjs` | PASS |
+| `npm run mcp-path` | PASS (version 0.1.4) |
+| `npm run offline` (7) | PASS |
+| `npm run offline-regression` (6) | PASS |
+| `npm run offline-keyed` (15, mocked plans and WebSocket) | PASS |
+| `npm run offline-audit` (14: search errors, stdio, cache grace, redirects, dates, DST, watch, page cap, clamp note, hyphenated names, retryAfter) | PASS |
+| `npm run smoke` keyless live | 50/50 PASS |
+
+`initialize` reported `themeparks-web 0.1.4`. The keyless window check still returns `history_window_exceeded` for an explicit range past 7 days. NightFlight Oct 11, 4-6 PM ET still reads DOWN 7, OPERATING 42, DOWN 22, OPERATING 48. Keyed live checks (plans above free, park daily `next` paging, watch close 4029) stay covered by the mocked keyed suite.
+
+Follow-up the same day, about 12:18 PM ET, Node v22.14.0: destination schedules include a non-empty `parks[]` (offline and keyless smoke), and a DST gap suggests the time after the jump. Offline suites and keyless smoke 50/50 passed again.
+
+## 0.1.3 record
 
 Run on 2026-10-15, about 11:25 AM ET, on Grok Bot's box (Linux, Node v20.19.2). All results below are real.
 

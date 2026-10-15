@@ -67,8 +67,8 @@ delete env.THEMEPARKS_API_KEY;
 const { child, rpc, call } = startServer(env);
 
 await check("initialize serverInfo", async () => {
-  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.3" } });
-  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.3", JSON.stringify(m.result.serverInfo));
+  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.4" } });
+  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.4", JSON.stringify(m.result.serverInfo));
   return `${m.result.serverInfo.name} ${m.result.serverInfo.version}`;
 });
 
@@ -262,8 +262,8 @@ await check("every result carries Powered by ThemeParks.wiki", async () => {
 await check("BUG1 destination schedule returns park entries", async () => {
   const { isError, p } = await call("themeparks_schedule", { entity: WDW, days: 2 });
   const parks = new Set(p.days.flatMap((d) => d.entries.map((e) => e.park)));
-  assert(!isError && p.days.length > 0 && parks.size >= 4, JSON.stringify(p).slice(0, 300));
-  return `${p.days.length} days, parks: ${[...parks].join("; ")}`;
+  assert(!isError && p.days.length > 0 && parks.size >= 4 && Array.isArray(p.parks) && p.parks.length >= 4, JSON.stringify({ parks: p.parks, days: p.days?.length }).slice(0, 300));
+  return `${p.days.length} days, parks[] ${p.parks.length}: ${[...parks].join("; ")}`;
 });
 
 await check("BUG2 destination label correct when within is a park", async () => {
