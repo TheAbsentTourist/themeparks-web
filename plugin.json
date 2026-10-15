@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "themeparks-web",
+  "version": "0.1.1",
+  "description": "Theme park live ride status, wait times, virtual queues, park hours, and ride uptime history from the free ThemeParks.wiki API. Keyless. Unofficial; not affiliated with ThemeParks.wiki or any park.",
+  "author": {
+    "name": "TheAbsentTourist",
+    "email": "chucktastictime@gmail.com",
+    "url": "https://github.com/TheAbsentTourist"
+  },
+  "license": "MIT",
+  "keywords": [
+    "theme-parks",
+    "wait-times",
+    "disney",
+    "universal",
+    "ride-status",
+    "uptime",
+    "park-hours",
+    "themeparks-wiki"
+  ],
+  "homepage": "https://github.com/TheAbsentTourist/themeparks-web",
+  "repository": "https://github.com/TheAbsentTourist/themeparks-web"
+}

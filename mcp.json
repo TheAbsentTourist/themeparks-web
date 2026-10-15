@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "themeparks-web": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./server.mjs"],
+      "cwd": "./",
+      "env": {
+        "THEMEPARKS_API_KEY": "${THEMEPARKS_API_KEY}"
+      }
+    }
+  }
+}

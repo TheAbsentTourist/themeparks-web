@@ -1,0 +1,36 @@
+{
+  "name": "themeparks-web",
+  "displayName": "Theme Parks Web",
+  "version": "0.1.1",
+  "description": "Theme park live ride status, wait times, virtual queues, park hours, and ride uptime history from the free ThemeParks.wiki API. Keyless. Unofficial; not affiliated with ThemeParks.wiki or any park.",
+  "author": {
+    "name": "TheAbsentTourist",
+    "email": "chucktastictime@gmail.com",
+    "url": "https://github.com/TheAbsentTourist"
+  },
+  "license": "MIT",
+  "keywords": [
+    "theme-parks",
+    "wait-times",
+    "disney",
+    "universal",
+    "ride-status",
+    "uptime",
+    "park-hours",
+    "themeparks-wiki"
+  ],
+  "homepage": "https://github.com/TheAbsentTourist/themeparks-web",
+  "repository": "https://github.com/TheAbsentTourist/themeparks-web",
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "THEMEPARKS_API_KEY": {
+        "type": "string",
+        "title": "ThemeParks.wiki API key (optional)",
+        "description": "Optional. Leave blank to run keyless; every tool works without it. A free key from https://www.themeparks.wiki/api raises the history budget from 60 to 600 calls per hour and the history window from 7 to 30 days. Sent only to api.themeparks.wiki as the x-api-key header. Never commit a key."
+      }
+    }
+  },
+  "logo": "assets/logo-plate.png"
+}
