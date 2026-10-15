@@ -67,8 +67,8 @@ delete env.THEMEPARKS_API_KEY;
 const { child, rpc, call } = startServer(env);
 
 await check("initialize serverInfo", async () => {
-  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.3" } });
-  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.3", JSON.stringify(m.result.serverInfo));
+  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.4" } });
+  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.4", JSON.stringify(m.result.serverInfo));
   return `${m.result.serverInfo.name} ${m.result.serverInfo.version}`;
 });
 

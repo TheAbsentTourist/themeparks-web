@@ -11,8 +11,8 @@ This plugin is unofficial software. It is not affiliated with, endorsed by, or a
 ## Limits this plugin respects
 
 - 300 requests per minute per IP (shared by every tool), 60 history calls per hour without a key.
-- Live data is cached for 60 seconds, the same cadence the API updates. Other data is cached for 5 minutes, and resort entity lists for 6 hours.
-- On HTTP 429 the plugin stops, reports `retryAfterSeconds`, and serves an older cached answer when it has one. It never retries in a loop.
+- Live data is cached for 60 seconds, the same cadence the API updates. Other data is cached for 5 minutes, and resort entity lists for 6 hours. Entries expire after that TTL plus a short grace window.
+- On HTTP 429 the plugin stops, reports `retryAfterSeconds`, and serves a cached answer only while it is still inside the grace window. The same stale path covers 502/503/504. It never retries in a loop.
 
 ## Secrets
 

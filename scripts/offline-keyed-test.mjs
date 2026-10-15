@@ -114,12 +114,15 @@ pass("pro plan (mocked): 400-day window honored, park daily next page followed, 
 
 me = { ...me, tier: "enterprise", historyDays: null, historyAllArchive: true, historyEarliestDate: null };
 await run("themeparks_find", { mode: "key_status" });
-r = await run("themeparks_uptime", { entity: MK, from: "2021-07-03", to: "2026-10-15" });
+r = await run("themeparks_uptime", { entity: SM, from: "2021-07-03", to: "2026-10-15" });
 assert.ok(!r.isError, JSON.stringify(r.payload));
 assert.equal(r.payload.access.historyDays, "all");
-r = await run("themeparks_uptime", { entity: MK, from: "2010-01-01", to: "2026-10-15" });
+r = await run("themeparks_uptime", { entity: MK, from: "2024-01-01", to: "2026-10-15" });
 assert.equal(r.payload.error, "bad_request");
-pass("all-archive plan (mocked): 5-year daily range allowed; >3,660 days rejected");
+assert.match(r.payload.message, /15 pages/);
+r = await run("themeparks_uptime", { entity: SM, from: "2010-01-01", to: "2026-10-15" });
+assert.equal(r.payload.error, "bad_request");
+pass("all-archive plan (mocked): a ride can read a 5-year daily range; a park over 15 pages, and any range over 3,660 days, is rejected");
 
 r = await run("themeparks_uptime", { entity: MK, granularity: "changes", date: "2023-01-05" });
 assert.ok(!r.isError, JSON.stringify(r.payload).slice(0, 300));

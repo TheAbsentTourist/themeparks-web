@@ -1,4 +1,12 @@
-# VERIFY: themeparks-web 0.1.3
+# VERIFY: themeparks-web 0.1.4
+
+0.1.4 in `plugin.json`, `.cursor-plugin/plugin.json`, `package.json`, server `serverInfo` and User-Agent, skill, README, CHANGELOG-0.1.4.md, and this file. `scripts/mcp-path-test.mjs` enforces it.
+
+## 0.1.4 results
+
+Filled in after the offline suites and the keyless live smoke on this run.
+
+## 0.1.3 record
 
 Run on 2026-10-15, about 11:25 AM ET, on Grok Bot's box (Linux, Node v20.19.2). All results below are real.
 

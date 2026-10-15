@@ -7,7 +7,7 @@
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "themeparks-web", version: VERSION };
 const API = "https://api.themeparks.wiki/v1";
@@ -33,9 +33,15 @@ const MAJOR_RESORTS = /walt disney world|disneyland|tokyo disney|shanghai disney
 const STALE_AFTER_MINUTES = 24 * 60;
 const DETAILS_MAX = 25;
 const MATCH_THRESHOLD = 0.5;
+const LIVE_STALE_GRACE_MS = 5 * 60_000;
+const HISTORY_STALE_GRACE_MS = 30 * 60_000;
+const DEFAULT_STALE_GRACE_MS = 15 * 60_000;
+const CHILDREN_STALE_GRACE_MS = 60 * 60_000;
+const REQUESTS_PER_MINUTE = 300;
+const PARK_DAILY_PAGE_DAYS = 31;
+const API_HOST = "api.themeparks.wiki";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
-const ID_LIKE = /^(?=\S+$)(?:.*[;=_].*|\d{3,}|[a-z0-9]+(?:-[a-z0-9]+){2,})$/;
 
 const ENTITY_TYPES = ["DESTINATION", "PARK", "ATTRACTION", "SHOW", "RESTAURANT", "HOTEL"];
 const STATUSES = ["OPERATING", "DOWN", "CLOSED", "REFURBISHMENT"];
@@ -51,7 +57,11 @@ class ToolError extends Error {
 
 function apiKey() {
   const key = String(process.env.THEMEPARKS_API_KEY ?? "").trim();
-  return key && !/^\$\{.*\}$/.test(key) ? key : "";
+  if (!key || /^\$\{.*\}$/.test(key)) return "";
+  if (/[\r\n\0]/.test(key)) {
+    throw new ToolError("bad_request", "THEMEPARKS_API_KEY contains a character that cannot be sent in a header. Leave it unset to stay keyless.");
+  }
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,40 +70,145 @@ function apiKey() {
 
 const cache = new Map();
 const inflight = new Map();
+const requestStamps = [];
+
+function ttlFor(path) {
+  if (path === "/me") return 0;
+  if (/\/live(\?|$)/.test(path)) return LIVE_TTL_MS;
+  if (path.endsWith("/children")) return CHILDREN_TTL_MS;
+  return DEFAULT_TTL_MS;
+}
+
+function graceFor(path) {
+  if (/\/live(\?|$)/.test(path)) return LIVE_STALE_GRACE_MS;
+  if (path.includes("/history")) return HISTORY_STALE_GRACE_MS;
+  if (path.endsWith("/children")) return CHILDREN_STALE_GRACE_MS;
+  return DEFAULT_STALE_GRACE_MS;
+}
+
+function readCache(path) {
+  const hit = cache.get(path);
+  if (!hit) return null;
+  const age = Date.now() - hit.at;
+  if (age > ttlFor(path) + graceFor(path)) {
+    cache.delete(path);
+    return null;
+  }
+  return { hit, fresh: age < ttlFor(path) };
+}
+
+function remember(path, at, data) {
+  if (path === "/me") return;
+  cache.set(path, { at, data });
+  if (cache.size <= 400) return;
+  const now = Date.now();
+  for (const [k, v] of cache) if (now - v.at > ttlFor(k) + graceFor(k)) cache.delete(k);
+}
+
+function requestBudget() {
+  const rl = meMemo?.plan?.rateLimit;
+  if (rl?.unmetered) return null;
+  const limit = Number(rl?.limit);
+  const windowSeconds = Number(rl?.windowSeconds);
+  if (Number.isFinite(limit) && limit > 0) return { limit, windowMs: (Number.isFinite(windowSeconds) && windowSeconds > 0 ? windowSeconds : 60) * 1000 };
+  return { limit: REQUESTS_PER_MINUTE, windowMs: 60_000 };
+}
+
+function takeRequestSlot() {
+  const budget = requestBudget();
+  if (!budget) return;
+  const now = Date.now();
+  const start = now - budget.windowMs;
+  while (requestStamps.length && requestStamps[0] <= start) requestStamps.shift();
+  if (requestStamps.length >= budget.limit) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((requestStamps[0] + budget.windowMs - now) / 1000));
+    throw new ToolError("rate_limited", `Local request budget reached (${budget.limit} per ${Math.round(budget.windowMs / 1000)}s). Retry in ${retryAfterSeconds}s.`, { retryAfterSeconds });
+  }
+  requestStamps.push(now);
+}
+
+function retryAfterSecondsFrom(body, headers) {
+  const nested = typeof body?.error === "object" && body?.error ? body.error.retryAfter : undefined;
+  const raw = body?.retryAfter ?? nested ?? headers?.get?.("retry-after");
+  if (raw == null || raw === "") return 60;
+  const n = Number(raw);
+  if (Number.isFinite(n)) return Math.max(1, Math.round(n));
+  const when = Date.parse(String(raw));
+  if (Number.isFinite(when)) return Math.max(1, Math.round((when - Date.now()) / 1000));
+  return 60;
+}
 
 async function api(path) {
-  const ttl = path === "/me" ? 0 : /\/live(\?|$)/.test(path) ? LIVE_TTL_MS : path.endsWith("/children") ? CHILDREN_TTL_MS : DEFAULT_TTL_MS;
-  const hit = cache.get(path);
-  if (hit && Date.now() - hit.at < ttl) return { data: hit.data, fetchedAt: new Date(hit.at).toISOString(), cached: true };
+  const cached = readCache(path);
+  if (cached?.fresh) return { data: cached.hit.data, fetchedAt: new Date(cached.hit.at).toISOString(), cached: true };
   if (inflight.has(path)) return inflight.get(path);
-  const p = fetchFresh(path, hit).finally(() => inflight.delete(path));
+  const p = fetchFresh(path, cached?.hit ?? null).finally(() => inflight.delete(path));
   inflight.set(path, p);
   return p;
 }
 
+function staleFrom(hit, reason) {
+  return { data: hit.data, fetchedAt: new Date(hit.at).toISOString(), cached: true, staleBecause: reason };
+}
+
+async function fetchSameOrigin(path, headers) {
+  let url = API + path;
+  for (let hop = 0; hop < 3; hop++) {
+    const res = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (res.status < 300 || res.status >= 400) return res;
+    const loc = res.headers.get("location");
+    if (!loc) throw new ToolError("upstream_error", "ThemeParks.wiki redirected without a Location header.");
+    let next;
+    try {
+      next = new URL(loc, url);
+    } catch {
+      throw new ToolError("upstream_error", "ThemeParks.wiki sent a redirect that could not be parsed.");
+    }
+    if (next.protocol !== "https:" || next.host !== API_HOST) {
+      throw new ToolError("upstream_error", "Refused a redirect off api.themeparks.wiki.");
+    }
+    url = next.href;
+  }
+  throw new ToolError("upstream_error", "ThemeParks.wiki redirected too many times.");
+}
+
 async function fetchFresh(path, hit) {
+  try {
+    takeRequestSlot();
+  } catch (err) {
+    if (hit && err instanceof ToolError && err.code === "rate_limited") return { ...staleFrom(hit, "rate_limited"), retryAfterSeconds: err.extra?.retryAfterSeconds };
+    throw err;
+  }
   const headers = { Accept: "application/json", "User-Agent": UA };
   const key = apiKey();
   if (key) headers["x-api-key"] = key;
-  const staleFrom = (reason) => ({ data: hit.data, fetchedAt: new Date(hit.at).toISOString(), cached: true, staleBecause: reason });
   let res;
   try {
-    res = await fetch(API + path, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    res = await fetchSameOrigin(path, headers);
   } catch (err) {
-    if (hit) return staleFrom("network_error");
+    if (err instanceof ToolError) {
+      if (hit) return staleFrom(hit, err.code === "rate_limited" ? "rate_limited" : "upstream_error");
+      throw err;
+    }
+    if (hit) return staleFrom(hit, "network_error");
     throw new ToolError("network_error", `Could not reach ThemeParks.wiki: ${err?.message || err}`);
   }
   const body = await res.json().catch(() => null);
   const historyBudget = budgetFrom(res.headers);
   if (historyBudget) lastHistoryBudget = { ...historyBudget, seenAt: new Date().toISOString() };
   if (res.status === 429) {
-    const retryAfterSeconds = Number(body?.retryAfter ?? res.headers.get("retry-after")) || 60;
-    if (hit) return staleFrom("rate_limited");
+    const retryAfterSeconds = retryAfterSecondsFrom(body, res.headers);
+    if (hit) return staleFrom(hit, "rate_limited");
     throw new ToolError("rate_limited", `ThemeParks.wiki rate limit reached. Retry in ${retryAfterSeconds}s.`, {
       retryAfterSeconds,
       historyBudget: historyBudget ?? undefined,
       hint: apiKey() ? undefined : "A free THEMEPARKS_API_KEY raises the history budget from 60 to 600 calls per hour.",
     });
+  }
+  if ([502, 503, 504].includes(res.status)) {
+    const message = (typeof body?.error === "object" && body?.error?.message) || body?.message || `HTTP ${res.status}`;
+    if (hit) return staleFrom(hit, "upstream_error");
+    throw new ToolError("upstream_error", message, { status: res.status });
   }
   if (!res.ok) {
     const e = body?.error;
@@ -113,7 +228,7 @@ async function fetchFresh(path, hit) {
     });
   }
   const at = Date.now();
-  if (path !== "/me") cache.set(path, { at, data: body });
+  remember(path, at, body);
   return { data: body, fetchedAt: new Date(at).toISOString(), cached: false, historyBudget };
 }
 
@@ -213,18 +328,30 @@ async function searchEverywhere(query, keep = () => true) {
   const hits = [];
   let scanned = 0;
   let stoppedBy = null;
+  let stopError = null;
+  const noteStop = (err) => {
+    if (stoppedBy) return;
+    if (err instanceof ToolError) {
+      stoppedBy = err.code;
+      stopError = err;
+      return;
+    }
+    stoppedBy = "network_error";
+    stopError = new ToolError("network_error", `Could not reach ThemeParks.wiki: ${err?.message || err}`);
+  };
   for (const tier of tiers) {
     const queue = [...tier];
     const worker = async () => {
       while (queue.length && !stoppedBy) {
         const d = queue.shift();
+        if (!d) return;
         try {
           for (const ref of await childrenOf(d)) {
             if (keep(ref)) hits.push({ ref: { ...ref, destination: d.name }, score: Math.round(score(query, ref) * 100) / 100 });
           }
           scanned++;
         } catch (err) {
-          if (err instanceof ToolError && err.code === "rate_limited") stoppedBy = "rate_limited";
+          noteStop(err);
         }
       }
     };
@@ -232,14 +359,25 @@ async function searchEverywhere(query, keep = () => true) {
     if (stoppedBy || hits.some((h) => h.score >= TIER_STOP)) break;
   }
   const ranked = hits.filter((h) => h.score >= MATCH_THRESHOLD).sort((a, b) => b.score - a.score || a.ref.name.localeCompare(b.ref.name));
-  return { ranked, scan: { destinationsScanned: scanned, destinationsTotal: destinations.length, stoppedBy: stoppedBy ?? undefined } };
+  const scan = {
+    destinationsScanned: scanned,
+    destinationsTotal: destinations.length,
+    stoppedBy: stoppedBy ?? undefined,
+    retryAfterSeconds: stopError?.extra?.retryAfterSeconds,
+  };
+  return { ranked, scan, stopError };
 }
 
 async function rankAnywhere(query, keep = () => true) {
   const local = rank(query, (await catalog()).filter(keep));
   if (local[0]?.score >= STRONG_MATCH) return { ranked: local };
-  const { ranked, scan } = await searchEverywhere(query, keep);
-  return { ranked: [...ranked, ...local].sort((a, b) => b.score - a.score), scan };
+  const { ranked, scan, stopError } = await searchEverywhere(query, keep);
+  const merged = [...ranked, ...local].sort((a, b) => b.score - a.score || a.ref.name.localeCompare(b.ref.name));
+  if (stopError && stopError.code !== "rate_limited") {
+    stopError.extra = { ...stopError.extra, scan, candidates: merged.slice(0, 8).map(entityOut) };
+    if (scan.destinationsScanned === 0 || !merged.length || merged[0].score < STRONG_MATCH) throw stopError;
+  }
+  return { ranked: merged, scan };
 }
 
 const CORE_KEYS = new Set(["id", "name", "slug", "parkId", "parentId", "timezone", "entityType", "destinationId", "externalId", "attractionType", "location", "_id"]);
@@ -298,7 +436,8 @@ async function resolve(ref, within) {
   if (!within) {
     const direct = await resolveDirect(text);
     if (direct) return direct;
-    if (ID_LIKE.test(text)) {
+    // Operator ids (";", "=") fail fast. Hyphenated names fall through to fuzzy search after a 404.
+    if (/[;=]/.test(text)) {
       throw new ToolError("not_found", `No ThemeParks.wiki entity has the id, slug, or destination externalId "${text}".`, {
         hint: "Upstream resolves UUIDs, slugs, and destination externalIds directly; ride-level operator ids are not indexed. Search by name instead.",
       });
@@ -309,8 +448,11 @@ async function resolve(ref, within) {
   if (!ranked.length) {
     throw new ToolError("not_found", `Nothing ${parent ? `in ${parent.name} ` : ""}matches "${text}".`, {
       scan,
-      hint: scan?.stoppedBy
-        ? "The all-resort search stopped at the rate limit. Retry shortly or pass within=<park or resort>."
+      retryAfterSeconds: scan?.retryAfterSeconds,
+      hint: scan?.stoppedBy === "rate_limited"
+        ? `The all-resort search stopped at the rate limit${scan.retryAfterSeconds ? ` (retry in ${scan.retryAfterSeconds}s)` : ""}. Retry shortly or pass within=<park or resort>.`
+        : scan?.stoppedBy
+        ? `The all-resort search stopped (${scan.stoppedBy}). Retry shortly or pass within=<park or resort>.`
         : "Try a shorter query or pass within=<park or resort>.",
     });
   }
@@ -356,7 +498,7 @@ const QUEUE_FIELDS = {
 function bestTimeToRide(forecast, tz, now) {
   if (!forecast?.length) return { available: false, reason: FORECAST_NOTE };
   const today = todayIn(tz, now);
-  const hourStart = now - (now % 3_600_000);
+  const hourStart = startOfLocalHour(now, tz || "UTC");
   const slots = forecast
     .filter((f) => f.waitTime != null && todayIn(tz, Date.parse(f.time)) === today && Date.parse(f.time) >= hourStart)
     .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
@@ -446,22 +588,49 @@ function int(v, { min, max, def, name }) {
 
 function ymd(v, name) {
   if (v === undefined || v === null || v === "") return null;
-  if (!YMD.test(String(v))) throw new ToolError("bad_request", `${name} must be YYYY-MM-DD.`);
-  return String(v);
+  const s = String(v);
+  if (!YMD.test(s)) throw new ToolError("bad_request", `${name} must be YYYY-MM-DD.`);
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    throw new ToolError("bad_request", `${name} must be a real calendar date (YYYY-MM-DD).`);
+  }
+  return s;
 }
 
 function todayIn(tz, at = Date.now()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
 }
 
+function zonedParts(tz, at) {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) throw new ToolError("bad_request", "Invalid time value.");
+  try {
+    return Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { timeZone: tz || "UTC", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        .formatToParts(date)
+        .map((x) => [x.type, x.value]),
+    );
+  } catch {
+    throw new ToolError("bad_request", `Unknown timezone "${tz}".`);
+  }
+}
+
 function tzOffsetMinutes(tz, at) {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      .formatToParts(new Date(at))
-      .map((x) => [x.type, x.value]),
-  );
+  const parts = zonedParts(tz, at);
   const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
   return Math.round((asUtc - Math.floor(at / 1000) * 1000) / 60_000);
+}
+
+function startOfLocalHour(now, tz, depth = 0) {
+  if (depth > 4) return now - (now % 3_600_000);
+  const p = zonedParts(tz, now);
+  const wall = `${p.year}-${p.month}-${p.day}T${p.hour}:00:00`;
+  try {
+    return localToInstant(wall, tz).ms;
+  } catch {
+    return startOfLocalHour(now + 30 * 60_000, tz, depth + 1);
+  }
 }
 
 function fmtOffset(min) {
@@ -470,12 +639,50 @@ function fmtOffset(min) {
   return `${sign}${String(Math.floor(a / 60)).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
 }
 
+function wallClock(wall) {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(wall));
+  if (!m) throw new ToolError("bad_request", "Time must look like 2026-10-11T16:00.");
+  const hour = Number(m[2]);
+  const minute = Number(m[3]);
+  const second = m[4] === undefined ? 0 : Number(m[4]);
+  if (hour > 23 || minute > 59 || second > 59) {
+    throw new ToolError("bad_request", `${wall} is not a real clock time (hour 00-23, minute and second 00-59).`);
+  }
+  ymd(m[1], "date");
+  return `${m[1]}T${m[2]}:${m[3]}:${String(second).padStart(2, "0")}`;
+}
+
 // A park-local wall time ("2026-10-11T16:00") as an instant with the park's offset.
+// A daylight-saving gap does not round-trip and is rejected. A repeated hour is kept, with ambiguousNote naming the offset used.
 function localToInstant(wall, tz) {
-  const guess = Date.parse(`${wall.length === 16 ? wall + ":00" : wall}Z`);
+  const wanted = wallClock(wall);
+  const guess = Date.parse(`${wanted}Z`);
+  if (!Number.isFinite(guess)) throw new ToolError("bad_request", `${wall} is not a real timestamp.`);
   let off = tzOffsetMinutes(tz, guess);
   off = tzOffsetMinutes(tz, guess - off * 60_000);
-  return { ms: guess - off * 60_000, iso: `${wall.length === 16 ? wall + ":00" : wall}${fmtOffset(off)}` };
+  const ms = guess - off * 60_000;
+  const back = localTime(ms, tz);
+  if (back.iso.slice(0, 19) !== wanted) {
+    throw new ToolError("bad_request", `${wanted} does not exist in ${tz} (the clock skips that time). Nearest park time is ${back.text}.`);
+  }
+  const iso = `${wanted}${fmtOffset(off)}`;
+  let ambiguousNote;
+  for (const deltaMin of [30, 60, 90, 120]) {
+    for (const sign of [1, -1]) {
+      let alt;
+      try {
+        alt = localTime(ms + sign * deltaMin * 60_000, tz);
+      } catch {
+        continue;
+      }
+      if (alt.iso.slice(0, 19) === wanted && alt.iso !== iso) {
+        ambiguousNote = `${wanted} occurs twice in ${tz}. Used offset ${fmtOffset(off)} (${back.text}).`;
+        break;
+      }
+    }
+    if (ambiguousNote) break;
+  }
+  return { ms, iso, ambiguousNote };
 }
 
 function localTime(ms, tz) {
@@ -773,7 +980,11 @@ const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:\d{
 
 function instantArg(v, tz, name) {
   const t = String(v).trim();
-  if (INSTANT.test(t)) return { ms: Date.parse(t), iso: t };
+  if (INSTANT.test(t)) {
+    const ms = Date.parse(t);
+    if (!Number.isFinite(ms)) throw new ToolError("bad_request", `${name} must be a real timestamp. Got "${t}".`);
+    return { ms, iso: t };
+  }
   if (WALL.test(t)) return localToInstant(t, tz);
   throw new ToolError("bad_request", `${name} must be a park-local time like 2026-10-11T16:00, an RFC 3339 instant with an offset, or (for a whole day) YYYY-MM-DD.`);
 }
@@ -905,21 +1116,30 @@ async function changesTool(entity, args, tz, p, head) {
     endMs = Math.min(b.ms, now);
     const parkOff = fmtOffset(tzOffsetMinutes(tz, a.ms));
     const given = String(args.from).match(/(Z|[+-]\d{2}:\d{2})$/)?.[1];
+    const notes = [];
     if (given && (given === "Z" ? "+00:00" : given) !== parkOff) {
-      zoneNote = `from carried offset ${given}, but the park runs on ${parkOff}. The range was read as ${localTime(a.ms, tz).text} to ${localTime(b.ms, tz).text} park time. For park-local hours pass times without an offset, e.g. 2026-10-11T16:00.`;
+      notes.push(`from carried offset ${given}, but the park runs on ${parkOff}. The range was read as ${localTime(a.ms, tz).text} to ${localTime(b.ms, tz).text} park time. For park-local hours pass times without an offset, e.g. 2026-10-11T16:00.`);
     }
+    if (a.ambiguousNote) notes.push(a.ambiguousNote);
+    if (b.ambiguousNote) notes.push(b.ambiguousNote);
+    zoneNote = notes.join(" ") || undefined;
     path = `/entity/${entity.id}/history?from=${encodeURIComponent(a.iso)}&to=${encodeURIComponent(b.iso)}`;
   } else {
     const day = date ?? ymd(args.from, "from") ?? todayIn(tz);
     const last = isPark ? day : ymd(args.to, "to") ?? day;
     if (daysBetween(day, last) < 0) throw new ToolError("bad_request", "from must be on or before to.");
     if (daysBetween(day, last) >= RAW_ENTITY_MAX_DAYS) throw new ToolError("bad_request", `Minute-level history spans at most ${RAW_ENTITY_MAX_DAYS} days per call.`);
-    startMs = localToInstant(`${day}T00:00`, tz).ms;
-    endMs = Math.min(localToInstant(`${addDays(last, 1)}T00:00`, tz).ms, now);
+    const start = localToInstant(`${day}T00:00`, tz);
+    const end = localToInstant(`${addDays(last, 1)}T00:00`, tz);
+    startMs = start.ms;
+    endMs = Math.min(end.ms, now);
+    zoneNote = [start.ambiguousNote, end.ambiguousNote].filter(Boolean).join(" ") || undefined;
     path = day === last ? `/entity/${entity.id}/history?date=${day}` : `/entity/${entity.id}/history?from=${day}&to=${last}`;
   }
+  // historyEarliestDate from /v1/me is a UTC date. Compare UTC to UTC. Keyless has no such date; use the park-local day.
   const earliest = p.historyEarliestDate ?? addDays(todayIn(tz), 1 - windowDays(p));
-  if (!p.historyAllArchive && todayIn(tz, startMs) < earliest) {
+  const startDay = p.historyEarliestDate ? new Date(startMs).toISOString().slice(0, 10) : todayIn(tz, startMs);
+  if (!p.historyAllArchive && startDay < earliest) {
     throw new ToolError("history_window_exceeded", `That range starts before ${earliest}, the earliest day your access reaches.`, { earliestAllowedDate: earliest, hint: windowHint(p) });
   }
   const res = await historyCall(path, p);
@@ -983,9 +1203,28 @@ async function uptimeTool(args) {
   }
   const maxDays = windowDays(p);
   const to = ymd(args.to, "to") ?? todayIn(tz);
-  const from = ymd(args.from, "from") ?? addDays(to, 1 - int(args.days, { min: 1, max: maxDays, def: 7, name: "days" }));
+  const explicitFrom = ymd(args.from, "from");
+  let clampNote;
+  let from = explicitFrom;
+  if (!explicitFrom) {
+    const requestedDays = args.days === undefined || args.days === null || args.days === "" ? 7 : int(args.days, { min: 1, max: DAILY_MAX_DAYS, def: 7, name: "days" });
+    const capped = Math.min(requestedDays, maxDays);
+    if (requestedDays > capped) {
+      clampNote = `Requested ${requestedDays} days; this access allows ${maxDays}. Returned the last ${capped} days ending ${to}.`;
+    }
+    from = addDays(to, 1 - capped);
+  }
   if (daysBetween(from, to) < 0) throw new ToolError("bad_request", "from must be on or before to.");
   if (daysBetween(from, to) >= DAILY_MAX_DAYS) throw new ToolError("bad_request", `Daily history spans at most ${DAILY_MAX_DAYS} days per call.`);
+  const inclusiveDays = daysBetween(from, to) + 1;
+  const parkDailyMax = PARK_DAILY_MAX_PAGES * PARK_DAILY_PAGE_DAYS;
+  if ((entity.type === "PARK" || entity.type === "DESTINATION") && inclusiveDays > parkDailyMax) {
+    throw new ToolError(
+      "bad_request",
+      `Park and resort daily history is ${PARK_DAILY_PAGE_DAYS} days per page. This tool follows at most ${PARK_DAILY_MAX_PAGES} pages (${parkDailyMax} days, ${PARK_DAILY_MAX_PAGES} history calls). Narrow from/to.`,
+      { maxDays: parkDailyMax, historyCalls: PARK_DAILY_MAX_PAGES },
+    );
+  }
   const sort = args.sort ?? "down_desc";
   if (!UPTIME_SORTS[sort]) throw new ToolError("bad_request", `sort must be one of ${Object.keys(UPTIME_SORTS).join(", ")}.`);
   const types = list(args.type, ENTITY_TYPES, "type") ?? new Set(["ATTRACTION"]);
@@ -1000,6 +1239,7 @@ async function uptimeTool(args) {
     fetchedAt,
     cached,
     ...budgetReport(res, p),
+    ...(clampNote ? { note: clampNote } : {}),
     method: "uptimePct = operatingMinutes / (operatingMinutes + downMinutes), inside published park hours when the park published any. Unknown and CLOSED minutes are excluded. Today counts elapsed minutes only.",
   };
   if (Array.isArray(data?.entities)) {
@@ -1060,6 +1300,9 @@ async function watchTool(entity, args, tz, parks) {
   let stopReason = "time_limit";
   let triggeredBy = null;
   let error = null;
+  let snapshotComplete = false;
+  let retriedSubscribe = false;
+  let subMsg = null;
   const hasCondition = Boolean(untilStatus) || untilWait !== null;
   const matches = (live) => {
     if (single && live.id !== entity.id) return false;
@@ -1091,42 +1334,56 @@ async function watchTool(entity, args, tz, parks) {
     }
     ws.onopen = () => ws.send(JSON.stringify({ type: "auth", apiKey: apiKey() }));
     ws.onmessage = (ev) => {
-      let f;
       try {
-        f = JSON.parse(typeof ev.data === "string" ? ev.data : Buffer.from(ev.data).toString("utf8"));
-      } catch {
-        return;
-      }
-      if (f.type === "welcome") {
-        welcome = { protocol: f.data?.protocol ?? null, limits: f.data?.limits ?? null, heartbeatIntervalMs: f.data?.heartbeatIntervalMs ?? null };
-        const sub = { type: "subscribe", channel: entity.id, snapshot: true };
-        if (types && types.size === 1) sub.filter = [...types][0];
-        ws.send(JSON.stringify(sub));
-      } else if (f.type === "subscribed") {
-        subscribed = { subscriptionId: f.data?.subscriptionId ?? null, name: f.data?.name ?? null, entityType: f.data?.entityType ?? null };
-      } else if (f.type === "snapshot") {
-        for (const raw of f.data ?? []) if (!types || types.has(raw.entityType)) snapshot.push(toLive(raw));
-        if (f.final !== false && hasCondition && args.stop_if_already_met) {
-          const hit = snapshot.find(matches);
-          if (hit) {
-            triggeredBy = { ...hit, fromSnapshot: true };
+        let f;
+        try {
+          f = JSON.parse(typeof ev.data === "string" ? ev.data : Buffer.from(ev.data).toString("utf8"));
+        } catch {
+          return;
+        }
+        if (f.type === "welcome") {
+          welcome = { protocol: f.data?.protocol ?? null, limits: f.data?.limits ?? null, heartbeatIntervalMs: f.data?.heartbeatIntervalMs ?? null };
+          subMsg = { type: "subscribe", channel: entity.id, snapshot: true };
+          if (types && types.size === 1) subMsg.filter = [...types][0];
+          ws.send(JSON.stringify(subMsg));
+        } else if (f.type === "subscribed") {
+          subscribed = { subscriptionId: f.data?.subscriptionId ?? null, name: f.data?.name ?? null, entityType: f.data?.entityType ?? null };
+        } else if (f.type === "snapshot") {
+          const rows = Array.isArray(f.data) ? f.data : [];
+          for (const raw of rows) if (!types || types.has(raw.entityType)) snapshot.push(toLive(raw));
+          if (f.final === true) snapshotComplete = true;
+          if (f.final === true && hasCondition && args.stop_if_already_met) {
+            const hit = snapshot.find(matches);
+            if (hit) {
+              triggeredBy = { ...hit, fromSnapshot: true };
+              finish("condition_met");
+            }
+          }
+          if (f.final === true && !hasCondition && args.snapshot_only) finish("snapshot_only");
+        } else if (f.type === "update") {
+          if (types && !types.has(f.data?.entityType)) return;
+          const live = toLive(f.data ?? {});
+          const at = localTime(f.ts ?? Date.now(), tz);
+          const before = [...snapshot, ...updates].filter((u) => u.id === live.id).at(-1);
+          updates.push({ at: at.iso, atLocal: at.text, ...live, previousStatus: before?.status, previousWait: before?.standbyWait });
+          if (hasCondition && matches(live)) {
+            triggeredBy = updates.at(-1);
             finish("condition_met");
           }
+        } else if (f.type === "error") {
+          const retryable = Boolean(f.data?.retryable);
+          if (retryable && !subscribed && !retriedSubscribe && subMsg) {
+            retriedSubscribe = true;
+            error = null;
+            ws.send(JSON.stringify(subMsg));
+            return;
+          }
+          error = { code: f.data?.code ?? null, message: f.data?.message ?? "error", retryable };
+          finish("error");
         }
-        if (f.final !== false && !hasCondition && args.snapshot_only) finish("snapshot_only");
-      } else if (f.type === "update") {
-        if (types && !types.has(f.data?.entityType)) return;
-        const live = toLive(f.data ?? {});
-        const at = localTime(f.ts ?? Date.now(), tz);
-        const before = [...snapshot, ...updates].filter((u) => u.id === live.id).at(-1);
-        updates.push({ at: at.iso, atLocal: at.text, ...live, previousStatus: before?.status, previousWait: before?.standbyWait });
-        if (hasCondition && matches(live)) {
-          triggeredBy = updates.at(-1);
-          finish("condition_met");
-        }
-      } else if (f.type === "error") {
-        error = { code: f.data?.code ?? null, message: f.data?.message ?? "error", retryable: f.data?.retryable ?? null };
-        if (!f.data?.retryable) finish("error");
+      } catch (err) {
+        error = { code: "ws_message", message: err?.message || String(err) };
+        finish("error");
       }
     };
     ws.onerror = () => {
@@ -1139,7 +1396,7 @@ async function watchTool(entity, args, tz, parks) {
     };
   });
 
-  if (error && !welcome) throw new ToolError("watch_failed", error.message, { closeCode: error.code });
+  if (error && stopReason === "error") throw new ToolError("watch_failed", error.message, { closeCode: error.code, retryable: error.retryable ?? undefined });
   return {
     mode: "watch",
     watchedSeconds: Math.round((Date.now() - started) / 1000),
@@ -1147,11 +1404,11 @@ async function watchTool(entity, args, tz, parks) {
     triggeredBy: triggeredBy ?? undefined,
     connection: welcome ?? undefined,
     subscription: subscribed ?? undefined,
-    error: error ?? undefined,
+    snapshotPartial: snapshotComplete ? undefined : true,
     snapshot: single ? snapshot.find((s) => s.id === entity.id) ?? snapshot[0] ?? null : { entities: snapshot.length, counts: Object.fromEntries(STATUSES.map((s) => [s, snapshot.filter((x) => x.status === s).length])) },
     updateCount: updates.length,
     updates: updates.slice(-200),
-    note: "Preview WebSocket (wss://api.themeparks.wiki/v1/live): one connection, one subscription, closed before returning.",
+    note: "Preview WebSocket (wss://api.themeparks.wiki/v1/live): one connection, one subscription, at most 120s, closed before returning. until_status and until_wait_at_most are OR: either match stops the watch.",
   };
 }
 
@@ -1190,10 +1447,10 @@ const TOOL_REGISTRY = {
         include_forecast: { type: "boolean", description: "Include the park's hourly wait forecast when published. Default true for a single ride, false for a park." },
         include_times: { type: "boolean", description: "Include today's showtimes and operating hours. Default true for a single entity, false for a park." },
         include_details: { type: "boolean", description: "For a single ride: include details (attractionType, height limits in cm, mayGetWet, location). Default true." },
-        mode: { type: "string", enum: ["snapshot", "watch"], description: "snapshot (default) reads current state. watch (needs THEMEPARKS_API_KEY and Node 22+) opens the push WebSocket, takes a snapshot, then collects changes for watch_seconds or until a condition is met. Free plan: one connection at a time." },
-        watch_seconds: { type: "integer", description: `watch: how long to listen, 5-${WATCH_MAX_SECONDS} seconds (default 60).` },
-        until_status: { type: "string", description: "watch: stop early when a watched entity reaches one of these statuses, e.g. OPERATING." },
-        until_wait_at_most: { type: "integer", description: "watch: stop early when a standby wait drops to this many minutes or less." },
+        mode: { type: "string", enum: ["snapshot", "watch"], description: "snapshot (default) reads current state. watch (needs THEMEPARKS_API_KEY and a global WebSocket: Node 22+, or Node 20.10+ with --experimental-websocket) opens the push WebSocket, takes a snapshot, then collects changes for watch_seconds or until a condition is met. Free plan: one connection at a time." },
+        watch_seconds: { type: "integer", description: `watch: how long to listen, 5-${WATCH_MAX_SECONDS} seconds (default 60). Values above ${WATCH_MAX_SECONDS} are clamped.` },
+        until_status: { type: "string", description: "watch: stop early when a watched entity reaches one of these statuses, e.g. OPERATING. OR'd with until_wait_at_most: either condition stops the watch." },
+        until_wait_at_most: { type: "integer", description: "watch: stop early when a standby wait drops to this many minutes or less. OR'd with until_status: either condition stops the watch." },
         stop_if_already_met: { type: "boolean", description: "watch: return at once if the snapshot already meets the condition. Default false." },
         snapshot_only: { type: "boolean", description: "watch without a condition: return right after the snapshot. Default false." },
       },
@@ -1227,7 +1484,7 @@ const TOOL_REGISTRY = {
         entity: ENTITY_ARG,
         within: WITHIN_ARG,
         granularity: { type: "string", enum: ["daily", "changes", "coverage"], description: "daily (default), changes (minute-level), or coverage." },
-        days: { type: "integer", description: "daily: days ending today (default 7, up to your plan window: 7 keyless, 30 free key, more on paid plans)." },
+        days: { type: "integer", description: "daily: days ending today (default 7, up to your plan window: 7 keyless, 30 free key, more on paid plans). A larger days value is clamped and the result note says so. Park and resort ranges follow at most 15 pages (465 days, one history call per page)." },
         date: { type: "string", description: "changes: one park-local day YYYY-MM-DD (default today). Required form for a park." },
         from: { type: "string", description: "daily: start YYYY-MM-DD. changes: YYYY-MM-DD, or a park-local time 2026-10-11T16:00, or an RFC 3339 instant." },
         to: { type: "string", description: "daily: end YYYY-MM-DD (default today). changes: end time (exclusive) in the same form as from; default now." },
@@ -1260,23 +1517,26 @@ async function callTool(name, args) {
 // stdio JSON-RPC (Content-Length or newline framing)
 // ---------------------------------------------------------------------------
 
-let framing = "content-length";
+let writeOut = (buf) => stdout.write(buf);
 
-function send(msg) {
+function send(msg, frame) {
   const payload = Buffer.from(JSON.stringify(msg), "utf8");
-  if (framing === "lf") {
-    stdout.write(Buffer.concat([payload, Buffer.from("\n")]));
-    return;
-  }
-  stdout.write(Buffer.concat([Buffer.from(`Content-Length: ${payload.length}\r\n\r\n`), payload]));
+  const out = frame === "lf"
+    ? Buffer.concat([payload, Buffer.from("\n")])
+    : Buffer.concat([Buffer.from(`Content-Length: ${payload.length}\r\n\r\n`), payload]);
+  writeOut(out);
 }
 
-async function handle(msg) {
+function _setStdoutSink(fn) {
+  writeOut = fn;
+}
+
+async function handle(msg, frame) {
   if (!msg || typeof msg !== "object") return;
   const { id, method } = msg;
   if (id === undefined || id === null) return;
-  const ok = (result) => send({ jsonrpc: "2.0", id, result });
-  const fail = (code, message) => send({ jsonrpc: "2.0", id, error: { code, message } });
+  const ok = (result) => send({ jsonrpc: "2.0", id, result }, frame);
+  const fail = (code, message) => send({ jsonrpc: "2.0", id, error: { code, message } }, frame);
   try {
     switch (method) {
       case "initialize":
@@ -1304,15 +1564,23 @@ async function handle(msg) {
 
 let buf = Buffer.alloc(0);
 
-function dispatch(body) {
+let responseChain = Promise.resolve();
+
+function dispatch(body, frame) {
   let parsed;
   try {
     parsed = JSON.parse(body);
   } catch {
-    send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
-    return;
+    send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, frame);
+    return responseChain;
   }
-  void handle(parsed);
+  const run = responseChain.then(() => handle(parsed, frame));
+  responseChain = run.then(() => {}, () => {});
+  return run;
+}
+
+function _dispatchIncoming(body, frame = "content-length") {
+  return dispatch(body, frame);
 }
 
 function pump() {
@@ -1322,19 +1590,18 @@ function pump() {
       if (sep === -1) return;
       const len = Number(buf.subarray(0, sep).toString("utf8").match(/Content-Length:\s*(\d+)/i)?.[1]);
       const start = sep + 4;
+      if (!Number.isFinite(len)) return;
       if (buf.length < start + len) return;
-      framing = "content-length";
       const body = buf.subarray(start, start + len).toString("utf8");
       buf = buf.subarray(start + len);
-      dispatch(body);
+      dispatch(body, "content-length");
       continue;
     }
     const nl = buf.indexOf("\n");
     if (nl === -1) return;
-    framing = "lf";
     const line = buf.subarray(0, nl).toString("utf8").replace(/\r$/, "");
     buf = buf.subarray(nl + 1);
-    if (line.trim()) dispatch(line);
+    if (line.trim()) dispatch(line, "lf");
   }
 }
 
@@ -1357,4 +1624,4 @@ if (startedAsMain()) {
   stdin.resume();
 }
 
-export { SERVER_INFO, TOOL_REGISTRY, QUEUE_FIELDS, ATTRIBUTION, listTools, callTool, normalize, score, rank, toLiveStatus, toDailyUptime, uptimePct, bestTimeToRide, timeline, localToInstant, localTime, rideDetails, setWebSocketImpl };
+export { SERVER_INFO, TOOL_REGISTRY, QUEUE_FIELDS, ATTRIBUTION, listTools, callTool, normalize, score, rank, toLiveStatus, toDailyUptime, uptimePct, bestTimeToRide, timeline, localToInstant, localTime, rideDetails, setWebSocketImpl, _setStdoutSink, _dispatchIncoming };
