@@ -10,7 +10,7 @@ description: >
   themeparks-web MCP tools. Never invent waits, statuses, times, or hours.
 ---
 
-# Theme parks (themeparks-web 0.1.2)
+# Theme parks (themeparks-web 0.1.3)
 
 Call only the themeparks-web tools and report what they return. Always say how
 fresh the data is (`lastUpdated` per item, `fetchedAt` per call). Data is
@@ -52,6 +52,8 @@ use requires it.
 - Status: OPERATING, DOWN (temporarily stopped), CLOSED, REFURBISHMENT. `standbyWait` is minutes; `null` means no posted wait.
 - `stale: true` means no feed update in 24 hours. Say so.
 - `bestTimeToRide` is the longest window with today's lowest predicted wait, from the current hour on, with ThemeParks.wiki's crowd `percentage`. Forecasts exist only at Walt Disney World and Disneyland Resort; elsewhere `available: false` with a reason. Say it is a prediction.
+- For history, pass park-local times without an offset (`2026-10-11T16:00`). If `zoneNote` is present, the range was read in a different window than the user may mean: say so or retry without the offset.
+- Quote intervals, minutes and waits exactly as returned. Never round, merge, or fill them from daily stats.
 - History `intervals` are status spans with `startLocal`/`endLocal` in the park's time zone. Quote those times with the zone label. `openEnded: true` means the span ran past the end of the range.
 - `opening` is the state when the range began: `observedAt` is when it was last seen. A large `carriedInMinutes` or `staleCarryIn` means the start state is old; `degraded: true` means it may be incomplete. Say so.
 - `uptimePct` is operating / (operating + down) inside published hours. Today is partial.

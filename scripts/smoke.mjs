@@ -67,8 +67,8 @@ delete env.THEMEPARKS_API_KEY;
 const { child, rpc, call } = startServer(env);
 
 await check("initialize serverInfo", async () => {
-  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.2" } });
-  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.2", JSON.stringify(m.result.serverInfo));
+  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.3" } });
+  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.3", JSON.stringify(m.result.serverInfo));
   return `${m.result.serverInfo.name} ${m.result.serverInfo.version}`;
 });
 
@@ -343,6 +343,48 @@ await check("watch without key -> key_required", async () => {
   const { isError, p } = await call("themeparks_live", { entity: SPACE_MOUNTAIN, mode: "watch" });
   assert(isError && p.error === "key_required", JSON.stringify(p));
   return p.message;
+});
+
+await check('0.1.3 within "Disneyland Resort" resolves (not ambiguous)', async () => {
+  const { isError, p } = await call("themeparks_find", { query: "Space Mountain", within: "Disneyland Resort" });
+  assert(!isError && p.within.type === "DESTINATION" && p.within.name === "Disneyland Resort" && p.matches[0].park === "Disneyland Park", JSON.stringify(p).slice(0, 300));
+  return `${p.within.name} -> ${p.matches[0].name} @ ${p.matches[0].park}`;
+});
+
+await check("0.1.3 shared-name live uses each park's timezone", async () => {
+  const { isError, p } = await call("themeparks_live", { entity: "Space Mountain", include_forecast: true });
+  const mk = p.items.find((i) => i.park === "Magic Kingdom Park");
+  const dl = p.items.find((i) => i.park === "Disneyland Park");
+  const zone = (b) => (b?.available ? b.startLocal.match(/[A-Z]{3}$/)[0] : "n/a");
+  assert(!isError && mk.timezone === "America/New_York" && dl.timezone === "America/Los_Angeles" && !/P[SD]T/.test(mk.bestTimeToRide?.startLocal ?? "") && !/E[SD]T/.test(dl.bestTimeToRide?.startLocal ?? ""), JSON.stringify({ mk: mk.bestTimeToRide, dl: dl.bestTimeToRide }));
+  return `MK ${mk.bestTimeToRide?.startLocal ?? mk.bestTimeToRide?.reason} (${zone(mk.bestTimeToRide)}); DL ${dl.bestTimeToRide?.startLocal ?? dl.bestTimeToRide?.reason} (${zone(dl.bestTimeToRide)})`;
+});
+
+await check("0.1.3 find PARKs within WDW: park=itself, destination=resort", async () => {
+  const { isError, p } = await call("themeparks_find", { within: "Walt Disney World", type: "PARK" });
+  assert(!isError && p.matches.length >= 4 && p.matches.every((m) => m.park === m.name && /Walt Disney World/.test(m.destination)), JSON.stringify(p.matches.slice(0, 2)));
+  return p.matches.map((m) => m.name).join("; ");
+});
+
+await check("0.1.3 NightFlight 4-6 PM ET exact intervals (regression)", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
+  const got = p.intervals.map((i) => `${i.status} ${i.minutes}`).join(",");
+  assert(!isError && got === "DOWN 7,OPERATING 42,DOWN 22,OPERATING 48" && p.waitTimeline.min === 40 && p.waitTimeline.max === 120, got);
+  return got;
+});
+
+await check("0.1.3 NightFlight full-day rows agree with the 4-6 PM range", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", date: "2026-10-11" });
+  const at = (t) => p.intervals.find((i) => Date.parse(i.start) <= t && t < Date.parse(i.end))?.status;
+  const t0 = Date.parse("2026-10-11T16:00:00-04:00");
+  assert(!isError && at(t0 + 3 * 60e3) === "DOWN" && at(t0 + 20 * 60e3) === "OPERATING" && at(t0 + 60 * 60e3) === "DOWN" && at(t0 + 90 * 60e3) === "OPERATING", JSON.stringify(p.intervals).slice(0, 400));
+  return `day: ${JSON.stringify(p.minutesByStatus)}`;
+});
+
+await check("0.1.3 foreign offset flagged with zoneNote", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00:00-07:00", to: "2026-10-11T18:00:00-07:00" });
+  assert(!isError && /-07:00/.test(p.zoneNote) && p.range.fromLocal === "Oct 11, 7:00:00 PM EDT", JSON.stringify(p).slice(0, 300));
+  return p.zoneNote;
 });
 
 child.kill();

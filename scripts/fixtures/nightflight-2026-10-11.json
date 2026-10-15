@@ -1,0 +1,215 @@
+{
+ "id": "6ec37d0b-54ef-4cac-9bef-6f20abc2d247",
+ "name": "NightFlight Expedition",
+ "entityType": "ATTRACTION",
+ "parentId": "7502308a-de08-41a3-b997-961f8275ab3c",
+ "destinationId": "6c3cd0cc-57b5-431b-926c-2658e8104057",
+ "timezone": "America/New_York",
+ "range": {
+  "from": "2026-10-11",
+  "to": "2026-10-11"
+ },
+ "coverage": {
+  "firstRecordedAt": "2026-06-05"
+ },
+ "history": [
+  {
+   "time": "2026-10-11T13:09:52Z",
+   "changed": [
+    "status"
+   ],
+   "status": "DOWN",
+   "queue": {
+    "STANDBY": {
+     "waitTime": null
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:07:29Z",
+   "changed": [
+    "status"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": null
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:08:59Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 40
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:20:45Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 55
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:23:45Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 80
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:34:31Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 100
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T20:49:32Z",
+   "changed": [
+    "status",
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "DOWN",
+   "queue": {
+    "STANDBY": {
+     "waitTime": null
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T21:11:47Z",
+   "changed": [
+    "status",
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 100
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T21:16:33Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 120
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T23:01:53Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 145
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T23:15:03Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 120
+    }
+   }
+  },
+  {
+   "time": "2026-10-11T23:40:56Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 105
+    }
+   }
+  },
+  {
+   "time": "2026-10-12T00:20:01Z",
+   "changed": [
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 90
+    }
+   }
+  },
+  {
+   "time": "2026-10-12T00:42:04Z",
+   "changed": [
+    "status",
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "DOWN",
+   "queue": {
+    "STANDBY": {
+     "waitTime": null
+    }
+   }
+  },
+  {
+   "time": "2026-10-12T01:17:18Z",
+   "changed": [
+    "status",
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "OPERATING",
+   "queue": {
+    "STANDBY": {
+     "waitTime": 90
+    }
+   }
+  },
+  {
+   "time": "2026-10-12T02:27:07Z",
+   "changed": [
+    "status",
+    "queue.STANDBY.waitTime"
+   ],
+   "status": "CLOSED",
+   "queue": {
+    "STANDBY": {
+     "waitTime": null
+    }
+   }
+  }
+ ],
+ "next": null
+}

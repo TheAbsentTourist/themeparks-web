@@ -8,7 +8,7 @@ Live theme park data for Grok Bot and other MCP hosts. Ask "what's down at Unive
 
 **[Powered by ThemeParks.wiki](https://themeparks.wiki).** Every tool result carries this credit as `attribution`, and the skill tells the assistant to include it in answers.
 
-Version 0.1.2. Agent Plugin format. Zero npm dependencies. Node.js 18+. MIT.
+Version 0.1.3. Agent Plugin format. Zero npm dependencies. Node.js 18+. MIT.
 
 **Data credit.** All data comes from the free [ThemeParks.wiki API](https://www.themeparks.wiki/api) (v1, `https://api.themeparks.wiki/v1`). Thank you to the ThemeParks.wiki project. It reads the parks' own apps, so the data is unofficial. This plugin is not affiliated with ThemeParks.wiki, Disney, Universal, or any park operator. See [TERMS.md](TERMS.md) and [PRIVACY.md](PRIVACY.md).
 
@@ -98,7 +98,8 @@ Other Agent Plugin hosts use the shipped `mcp.json` (`node ./server.mjs`, `cwd: 
 npm run check      # node --check server.mjs
 npm run mcp-path   # offline: mcp.json shape, variables, version sync
 npm run offline    # offline: 429, serve-stale on 429, search stop on 429, queue mapping, optional key header
-npm run offline-keyed  # offline: 0.1.2 fixes, history math, mocked /v1/me plans, paging, mock WebSocket watch
+npm run offline-regression  # offline: 0.1.3 regressions incl. real NightFlight Oct 11 rows
+npm run offline-keyed  # offline: 0.1.3 fixes, history math, mocked /v1/me plans, paging, mock WebSocket watch
 npm run smoke      # live keyless stdio MCP checks; add --keyed with THEMEPARKS_API_KEY set for live key checks
 ```
 

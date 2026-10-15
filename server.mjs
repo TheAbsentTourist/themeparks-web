@@ -7,7 +7,7 @@
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "themeparks-web", version: VERSION };
 const API = "https://api.themeparks.wiki/v1";
@@ -159,16 +159,20 @@ function tokens(s) {
 function score(query, ref) {
   const q = normalize(query);
   if (!q) return 0;
+  // Tiers: exact name/slug (1) > same words ignoring "park"/"resort" (0.97) > every word prefix-matched (0.8-0.95) > substring (0.7) > partial.
   if (q === normalize(ref.name) || q === normalize(ref.slug)) return 1;
   const qt = tokens(query);
   const ct = tokens(ref.name);
-  if (qt.join(" ") === ct.join(" ")) return 0.98;
+  const resortish = ref.type === "DESTINATION" && RESORTISH.test(q) ? 0.02 : 0;
+  if (qt.join(" ") === ct.join(" ")) return 0.97 + resortish;
   const has = (t) => ct.some((c) => c === t || (t.length >= 3 && c.startsWith(t)));
   const hits = qt.filter(has).length;
-  if (hits === qt.length) return 0.8 + 0.15 * (qt.length / Math.max(ct.length, qt.length));
+  if (hits === qt.length) return 0.8 + 0.15 * (qt.length / Math.max(ct.length, qt.length)) + resortish;
   if (normalize(ref.name).includes(q)) return 0.7;
   return 0.6 * (hits / qt.length);
 }
+
+const RESORTISH = /\b(resort|resorts|world|destination)\b/;
 
 function rank(query, pool) {
   return pool
@@ -198,7 +202,8 @@ async function childrenOf(parent) {
     name: c.name,
     type: c.entityType,
     slug: c.slug ?? null,
-    park: parks.get(c.parentId) ?? (c.parentId === parent.id ? parent.name : undefined),
+    park: c.entityType === "PARK" ? c.name : c.entityType === "DESTINATION" ? undefined : parks.get(c.parentId) ?? (c.parentId === parent.id && parent.type === "PARK" ? parent.name : undefined),
+    destination: parent.type === "DESTINATION" ? parent.name : parent.destination,
   }));
 }
 
@@ -310,7 +315,8 @@ async function resolve(ref, within) {
     });
   }
   const [top, second] = ranked;
-  if (second && top.score >= 0.9 && top.score - second.score < 0.05 && top.ref.id !== second.ref.id) {
+  const tied = top.score === 1 ? second?.score === 1 : top.score - (second?.score ?? 0) < 0.02;
+  if (second && top.score >= 0.9 && tied && top.ref.id !== second.ref.id) {
     throw new ToolError("ambiguous", `"${text}" matches several entities. Pass one id, or narrow with within.`, {
       candidates: ranked.slice(0, 8).map(entityOut),
     });
@@ -521,7 +527,7 @@ async function findTool(args) {
     ? global.ranked.map(entityOut)
     : query
     ? rank(query, pool).map(entityOut)
-    : pool.map((ref) => ({ id: ref.id, name: ref.name, type: ref.type, park: ref.park, slug: ref.slug ?? undefined })).sort((a, b) => a.name.localeCompare(b.name));
+    : pool.map((ref) => ({ id: ref.id, name: ref.name, type: ref.type, park: ref.park, destination: ref.destination, slug: ref.slug ?? undefined })).sort((a, b) => a.name.localeCompare(b.name));
   const shown = matches.slice(0, limit);
   if (args.include_details) {
     const n = Math.min(shown.length, DETAILS_MAX);
@@ -576,13 +582,14 @@ async function liveTool(args) {
   const ids = sameName ? sameName.map((c) => c.id) : [entity.id];
   const [responses, parks] = await Promise.all([Promise.all(ids.map((id) => api(`/entity/${id}/live`))), parkNames()]);
   const { data, fetchedAt, cached, staleBecause } = responses[0];
+  // Each item keeps its own park's timezone (a same-name group can span Florida and California).
   const rawItems = sameName
-    ? responses.flatMap((r, k) => (r.data?.liveData ?? []).filter((x) => x.id === ids[k]))
-    : data?.liveData ?? [];
+    ? responses.flatMap((r, k) => (r.data?.liveData ?? []).filter((x) => x.id === ids[k]).map((raw) => ({ raw, tz: r.data?.timezone })))
+    : (data?.liveData ?? []).map((raw) => ({ raw, tz: data?.timezone ?? entity?.timezone }));
   const now = Date.now();
   const all = rawItems
-    .filter((r) => !types || types.has(r.entityType))
-    .map((r) => toLiveStatus(r, { parks, now, includeForecast, includeTimes, tz: data?.timezone ?? entity?.timezone }));
+    .filter(({ raw }) => !types || types.has(raw.entityType))
+    .map(({ raw, tz }) => ({ ...toLiveStatus(raw, { parks, now, includeForecast, includeTimes, tz }), timezone: sameName ? tz : undefined }));
   const counts = Object.fromEntries(STATUSES.map((s) => [s, all.filter((x) => x.status === s).length]));
   const matched = all
     .filter((x) => !statuses || statuses.has(x.status))
@@ -887,6 +894,7 @@ async function changesTool(entity, args, tz, p, head) {
   const now = Date.now();
   const date = ymd(args.date, "date");
   let startMs, endMs, path;
+  let zoneNote;
   if (args.from && !YMD.test(String(args.from))) {
     const a = instantArg(args.from, tz, "from");
     const b = args.to ? instantArg(args.to, tz, "to") : { ms: now, iso: localTime(now, tz).iso };
@@ -895,6 +903,11 @@ async function changesTool(entity, args, tz, p, head) {
     if (!isPark && b.ms - a.ms > RAW_ENTITY_MAX_DAYS * 86_400_000) throw new ToolError("bad_request", `Minute-level history spans at most ${RAW_ENTITY_MAX_DAYS} days per call.`);
     startMs = a.ms;
     endMs = Math.min(b.ms, now);
+    const parkOff = fmtOffset(tzOffsetMinutes(tz, a.ms));
+    const given = String(args.from).match(/(Z|[+-]\d{2}:\d{2})$/)?.[1];
+    if (given && (given === "Z" ? "+00:00" : given) !== parkOff) {
+      zoneNote = `from carried offset ${given}, but the park runs on ${parkOff}. The range was read as ${localTime(a.ms, tz).text} to ${localTime(b.ms, tz).text} park time. For park-local hours pass times without an offset, e.g. 2026-10-11T16:00.`;
+    }
     path = `/entity/${entity.id}/history?from=${encodeURIComponent(a.iso)}&to=${encodeURIComponent(b.iso)}`;
   } else {
     const day = date ?? ymd(args.from, "from") ?? todayIn(tz);
@@ -914,7 +927,9 @@ async function changesTool(entity, args, tz, p, head) {
   const out = {
     ...head,
     granularity: "changes",
-    range: { from: localTime(startMs, tz).iso, to: localTime(endMs, tz).iso, fromLocal: localTime(startMs, tz).text, toLocal: localTime(endMs, tz).text },
+    range: { from: localTime(startMs, tz).iso, to: localTime(endMs, tz).iso, fromLocal: localTime(startMs, tz).text, toLocal: localTime(endMs, tz).text, requested: { date: args.date, from: args.from, to: args.to } },
+    zoneNote,
+    dataNote: "Rows are ThemeParks.wiki's recorded changes. Quote intervals and waits exactly as returned; do not round or merge them.",
     fetchedAt: res.fetchedAt,
     cached: res.cached,
     ...budgetReport(res, p),
