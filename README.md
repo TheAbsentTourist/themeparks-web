@@ -100,4 +100,4 @@ npm run offline    # offline tests (also offline-keyed, offline-regression, offl
 npm run smoke      # live keyless checks (add --keyed with a key set)
 ```
 
-Latest recorded run: [VERIFY.md](VERIFY.md).
+Latest recorded run: [VERIFY.md](VERIFY.md) · [CHANGELOG-0.1.4.md](CHANGELOG-0.1.4.md).
