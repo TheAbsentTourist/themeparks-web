@@ -4,7 +4,7 @@
   <img src="assets/logo-plate.png" alt="themeparks-web" width="160" height="160" />
 </p>
 
-Live theme park data for Cursor (and other MCP hosts): ride status, wait times, virtual queues, park hours, best time to ride, and ride downtime history.
+Live theme park data for Grok Bot: ride status, wait times, virtual queues, park hours, best time to ride, and ride downtime history.
 
 This repo is a **plugin**, not a website. Agents call it as a stdio MCP server (`server.mjs`). Zero npm dependencies. Node.js 18+. MIT.
 
@@ -27,49 +27,19 @@ Every tool works with **no API key**. An optional free key adds more history and
 
 ---
 
-## Install
+## Install (Grok Bot)
 
-1. Install **Node.js 18+** from [nodejs.org](https://nodejs.org).
-2. Clone into Cursor's local plugins folder as a real directory (no symlink):
+Requires **Node.js 18+**. Clone the repo, then add a stdio connector named `themeparks-web`: command `node`, args `["<plugin folder>/server.mjs"]`. On Node 20, add `--experimental-websocket` before the script path so live push works.
 
 ```bash
-git clone https://github.com/TheAbsentTourist/themeparks-web.git ~/.cursor/plugins/local/themeparks-web
+git clone https://github.com/TheAbsentTourist/themeparks-web.git
 ```
-
-Windows PowerShell:
-
-```powershell
-git clone https://github.com/TheAbsentTourist/themeparks-web.git $env:USERPROFILE\.cursor\plugins\local\themeparks-web
-```
-
-3. Reload Cursor (**Developer: Reload Window**) and check Plugins for **themeparks-web**.
-
-### Windows: if the server won't start
-
-Cursor on Windows currently launches plugin MCP servers from the wrong folder and sometimes without Node on PATH. Logs show `Cannot find module '...\server.mjs'` or `spawn node ENOENT`. Add this to `%USERPROFILE%\.cursor\mcp.json` with your real paths (keep any other servers):
-
-```json
-{
-  "mcpServers": {
-    "themeparks-web": {
-      "command": "C:\\Program Files\\nodejs\\node.exe",
-      "args": ["C:\\Users\\USERNAME\\.cursor\\plugins\\local\\themeparks-web\\server.mjs"]
-    }
-  }
-}
-```
-
-If logs still name `plugin-themeparks-web-themeparks-web`, put the same paths in the plugin's own `mcp.json`. Never commit these paths.
-
-### Grok Bot
-
-Add a stdio connector named `themeparks-web`: command `node`, args `["<plugin folder>/server.mjs"]`. On Node 20, add `--experimental-websocket` before the script path so live push works.
 
 ---
 
 ## Optional API key
 
-Set `THEMEPARKS_API_KEY` in **Plugins → Configure** (or the host environment). Get one free: [register](https://www.themeparks.wiki/register), then generate a key on your [profile](https://www.themeparks.wiki/profile). It's sent only to `api.themeparks.wiki` and never logged.
+Set `THEMEPARKS_API_KEY` in the connector's environment. Get one free: [register](https://www.themeparks.wiki/register), then generate a key on your [profile](https://www.themeparks.wiki/profile). It's sent only to `api.themeparks.wiki` and never logged.
 
 | | No key | Free key |
 |---|---|---|
@@ -100,4 +70,4 @@ npm run offline    # offline tests (also offline-keyed, offline-regression, offl
 npm run smoke      # live keyless checks (add --keyed with a key set)
 ```
 
-Latest recorded run: [VERIFY.md](VERIFY.md) · [CHANGELOG-0.1.4.md](CHANGELOG-0.1.4.md).
+Version 0.1.4. Latest recorded run: [VERIFY.md](VERIFY.md) · [CHANGELOG-0.1.4.md](CHANGELOG-0.1.4.md).
