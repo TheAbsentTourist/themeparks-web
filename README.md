@@ -29,11 +29,26 @@ Every tool works with **no API key**. An optional free key adds more history and
 
 ## Install (Grok Bot)
 
-Requires **Node.js 18+**. Clone the repo, then add a stdio connector named `themeparks-web`: command `node`, args `["<plugin folder>/server.mjs"]`. On Node 20, add `--experimental-websocket` before the script path so live push works.
+Requires **Node.js 18+** and `npx` on `PATH`. There is no local path and no working-directory setting. Any host that can run `npx`, including the Grok Bot Directory, uses this block as written:
 
-```bash
-git clone https://github.com/TheAbsentTourist/themeparks-web.git
+```json
+{
+  "mcpServers": {
+    "themeparks-web": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "github:TheAbsentTourist/themeparks-web"],
+      "env": {
+        "THEMEPARKS_API_KEY": "${THEMEPARKS_API_KEY}"
+      }
+    }
+  }
+}
 ```
+
+`npx -y github:TheAbsentTourist/themeparks-web` installs this package from GitHub and runs the `themeparks-web` bin (`server.mjs`). Leave `THEMEPARKS_API_KEY` blank to stay keyless. If a host leaves `${THEMEPARKS_API_KEY}` unexpanded, or sets it to a blank string, the server treats that value as unset and does not send it as a key.
+
+Live push (`themeparks_live` `mode=watch`) needs Node.js 22+, or Node.js 20.10+ with `--experimental-websocket`. The npx command does not pass that flag.
 
 ---
 
@@ -70,4 +85,4 @@ npm run offline    # offline tests (also offline-keyed, offline-regression, offl
 npm run smoke      # live keyless checks (add --keyed with a key set)
 ```
 
-Version 0.1.4. Latest recorded run: [VERIFY.md](VERIFY.md) · [CHANGELOG-0.1.4.md](CHANGELOG-0.1.4.md).
+Version 0.1.5. Latest recorded run: [VERIFY.md](VERIFY.md) · [CHANGELOG-0.1.5.md](CHANGELOG-0.1.5.md).

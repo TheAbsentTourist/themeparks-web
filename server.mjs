@@ -4,10 +4,11 @@
  * Tools come from TOOL_REGISTRY. Queue kinds come from QUEUE_FIELDS.
  * Keyless by default. THEMEPARKS_API_KEY, when set, is sent as x-api-key.
  */
+import { realpathSync } from "node:fs";
 import { stdin, stdout } from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = { name: "themeparks-web", version: VERSION };
 const API = "https://api.themeparks.wiki/v1";
@@ -55,9 +56,20 @@ class ToolError extends Error {
   }
 }
 
+/**
+ * Blank and unexpanded plugin placeholders (`${THEMEPARKS_API_KEY}`) are unset.
+ * A host that does not expand mcp.json `${VAR}` must not send that string as a key.
+ */
+function isUnsetSetting(value) {
+  if (value == null) return true;
+  const s = String(value).trim();
+  return s === "" || /^\$\{[^}]+\}$/.test(s);
+}
+
 function apiKey() {
-  const key = String(process.env.THEMEPARKS_API_KEY ?? "").trim();
-  if (!key || /^\$\{.*\}$/.test(key)) return "";
+  const raw = process.env.THEMEPARKS_API_KEY;
+  if (isUnsetSetting(raw)) return "";
+  const key = String(raw).trim();
   if (/[\r\n\0]/.test(key)) {
     throw new ToolError("bad_request", "THEMEPARKS_API_KEY contains a character that cannot be sent in a header. Leave it unset to stay keyless.");
   }
@@ -1637,7 +1649,13 @@ function pump() {
 
 function startedAsMain() {
   try {
-    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+    if (!process.argv[1]) return false;
+    const argvUrl = pathToFileURL(process.argv[1]).href;
+    if (import.meta.url === argvUrl) return true;
+    // npx runs the bin through a symlink in its cache; compare real paths.
+    const argvReal = pathToFileURL(realpathSync(process.argv[1])).href;
+    const selfReal = pathToFileURL(realpathSync(fileURLToPath(import.meta.url))).href;
+    return argvReal === selfReal;
   } catch {
     return true;
   }
