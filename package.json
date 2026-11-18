@@ -1,6 +1,6 @@
 {
   "name": "themeparks-web",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": false,
   "type": "module",
   "description": "Theme park live ride status, wait times, virtual queues, ride details, best time to ride, park hours, and minute-level ride downtime history from the free ThemeParks.wiki API. Works keyless; an optional free key extends history to 30 days and enables live push. Powered by ThemeParks.wiki. Unofficial; not affiliated with ThemeParks.wiki or any park.",
@@ -12,6 +12,16 @@
     "email": "chucktastictime@gmail.com"
   },
   "license": "MIT",
+  "bin": {
+    "themeparks-web": "server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "skills",
+    "assets",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "check": "node --check ./server.mjs",
     "smoke": "node ./scripts/smoke.mjs",
@@ -29,22 +39,6 @@
   "bugs": {
     "url": "https://github.com/TheAbsentTourist/themeparks-web/issues"
   },
-  "files": [
-    "server.mjs",
-    "plugin.json",
-    ".cursor-plugin/",
-    "mcp.json",
-    "skills/",
-    "assets/",
-    "scripts/",
-    "README.md",
-    "TERMS.md",
-    "PRIVACY.md",
-    "SECURITY.md",
-    "LICENSE",
-    "CHANGELOG-*.md",
-    "VERIFY.md"
-  ],
   "keywords": [
     "theme-parks",
     "wait-times",

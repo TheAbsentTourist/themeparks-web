@@ -60,6 +60,8 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 const todayET = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+// Two park-local days ago is a finished day still inside the keyless 7-day window.
+const recentET = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(Date.now() - 2 * 86_400_000));
 const waitLine = (items) => items.map((i) => `${i.name}=${i.standbyWait ?? "-"}m ${i.status}`).join("; ");
 
 const env = { ...process.env };
@@ -67,8 +69,8 @@ delete env.THEMEPARKS_API_KEY;
 const { child, rpc, call } = startServer(env);
 
 await check("initialize serverInfo", async () => {
-  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.4" } });
-  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.4", JSON.stringify(m.result.serverInfo));
+  const m = await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "themeparks-web-smoke", version: "0.1.5" } });
+  assert(m.result.serverInfo.name === "themeparks-web" && m.result.serverInfo.version === "0.1.5", JSON.stringify(m.result.serverInfo));
   return `${m.result.serverInfo.name} ${m.result.serverInfo.version}`;
 });
 
@@ -307,18 +309,18 @@ await check("best time unavailable outside WDW/DLR says so", async () => {
   return b.reason;
 });
 
-await check("history changes: NightFlight Expedition Oct 11 4-6 PM ET", async () => {
-  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
-  assert(!isError && p.entity.park === "Dollywood" && p.intervals.length > 0 && p.opening && p.range.from === "2026-10-11T16:00:00-04:00", JSON.stringify(p).slice(0, 400));
-  samples.nightflight_oct11_4_6pm = { range: p.range, opening: p.opening, intervals: p.intervals, minutesByStatus: p.minutesByStatus, waitTimeline: p.waitTimeline };
-  return `${p.intervals.map((i) => `${i.status} ${i.startLocal.split(", ")[1]}-${i.endLocal.split(", ")[1]} (${i.minutes}m)`).join("; ")} | waits ${p.waitTimeline?.min}-${p.waitTimeline?.max}m`;
+await check("history changes: NightFlight Expedition recent afternoon", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: `${recentET}T16:00`, to: `${recentET}T18:00` });
+  assert(!isError && p.entity.park === "Dollywood" && p.intervals.length > 0 && p.opening && p.range.from.startsWith(recentET), JSON.stringify(p).slice(0, 400));
+  samples.nightflight_recent_afternoon = { range: p.range, opening: p.opening, intervals: p.intervals, minutesByStatus: p.minutesByStatus, waitTimeline: p.waitTimeline };
+  return `${recentET} ${p.intervals.map((i) => `${i.status} ${i.startLocal.split(", ")[1]}-${i.endLocal.split(", ")[1]} (${i.minutes}m)`).join("; ")} | waits ${p.waitTimeline?.min}-${p.waitTimeline?.max}m`;
 });
 
-await check("history changes: Magic Kingdom park-wide DOWN events Oct 11", async () => {
-  const { isError, p } = await call("themeparks_uptime", { entity: "Magic Kingdom", granularity: "changes", date: "2026-10-11" });
+await check("history changes: Magic Kingdom park-wide DOWN events on a recent day", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "Magic Kingdom", granularity: "changes", date: recentET });
   assert(!isError && p.totalEvents > 0 && p.events.every((e) => e.status === "DOWN"), JSON.stringify(p).slice(0, 300));
-  samples.mk_down_oct11 = { totalEvents: p.totalEvents, byEntity: p.byEntity, events: p.events };
-  return `${p.totalEvents} DOWN spans across ${p.byEntity.length} rides; worst ${p.byEntity[0].name} ${p.byEntity[0].minutes}m`;
+  samples.mk_down_recent = { date: recentET, totalEvents: p.totalEvents, byEntity: p.byEntity, events: p.events };
+  return `${recentET}: ${p.totalEvents} DOWN spans across ${p.byEntity.length} rides; worst ${p.byEntity[0].name} ${p.byEntity[0].minutes}m`;
 });
 
 await check("history changes: park range over a day -> bad_request", async () => {
@@ -366,24 +368,25 @@ await check("0.1.3 find PARKs within WDW: park=itself, destination=resort", asyn
   return p.matches.map((m) => m.name).join("; ");
 });
 
-await check("0.1.3 NightFlight 4-6 PM ET exact intervals (regression)", async () => {
-  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
-  const got = p.intervals.map((i) => `${i.status} ${i.minutes}`).join(",");
-  assert(!isError && got === "DOWN 7,OPERATING 42,DOWN 22,OPERATING 48" && p.waitTimeline.min === 40 && p.waitTimeline.max === 120, got);
-  return got;
+await check("history changes: interval rows have status, local times, and minutes", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: `${recentET}T16:00`, to: `${recentET}T18:00` });
+  assert(!isError && p.intervals.length > 0 && p.intervals.every((i) => STATUSES.includes(i.status) && i.minutes >= 0 && i.startLocal && i.endLocal), JSON.stringify(p).slice(0, 400));
+  return p.intervals.map((i) => `${i.status} ${i.minutes}`).join(",");
 });
 
-await check("0.1.3 NightFlight full-day rows agree with the 4-6 PM range", async () => {
-  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", date: "2026-10-11" });
-  const at = (t) => p.intervals.find((i) => Date.parse(i.start) <= t && t < Date.parse(i.end))?.status;
-  const t0 = Date.parse("2026-10-11T16:00:00-04:00");
-  assert(!isError && at(t0 + 3 * 60e3) === "DOWN" && at(t0 + 20 * 60e3) === "OPERATING" && at(t0 + 60 * 60e3) === "DOWN" && at(t0 + 90 * 60e3) === "OPERATING", JSON.stringify(p.intervals).slice(0, 400));
-  return `day: ${JSON.stringify(p.minutesByStatus)}`;
+await check("history changes: full-day rows agree with an afternoon slice", async () => {
+  const slice = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: `${recentET}T16:00`, to: `${recentET}T18:00` });
+  const day = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", date: recentET });
+  const probe = Date.parse(slice.p.intervals[0].start) + 60_000;
+  const at = (intervals, t) => intervals.find((i) => Date.parse(i.start) <= t && t < Date.parse(i.end))?.status;
+  const sliceStatus = at(slice.p.intervals, probe);
+  assert(!slice.isError && !day.isError && sliceStatus && sliceStatus === at(day.p.intervals, probe), JSON.stringify({ slice: slice.p.intervals, day: day.p.intervals }).slice(0, 400));
+  return `${recentET}: ${JSON.stringify(day.p.minutesByStatus)}`;
 });
 
-await check("0.1.3 foreign offset flagged with zoneNote", async () => {
-  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: "2026-10-11T16:00:00-07:00", to: "2026-10-11T18:00:00-07:00" });
-  assert(!isError && /-07:00/.test(p.zoneNote) && p.range.fromLocal === "Oct 11, 7:00:00 PM EDT", JSON.stringify(p).slice(0, 300));
+await check("foreign offset flagged with zoneNote", async () => {
+  const { isError, p } = await call("themeparks_uptime", { entity: "NightFlight Expedition", granularity: "changes", from: `${recentET}T16:00:00-07:00`, to: `${recentET}T18:00:00-07:00` });
+  assert(!isError && /-07:00/.test(p.zoneNote ?? "") && p.range.fromLocal, JSON.stringify(p).slice(0, 300));
   return p.zoneNote;
 });
 

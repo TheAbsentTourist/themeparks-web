@@ -3,9 +3,8 @@
   "mcpServers": {
     "themeparks-web": {
       "type": "stdio",
-      "command": "node",
-      "args": ["./server.mjs"],
-      "cwd": "./",
+      "command": "npx",
+      "args": ["-y", "github:TheAbsentTourist/themeparks-web"],
       "env": {
         "THEMEPARKS_API_KEY": "${THEMEPARKS_API_KEY}"
       }

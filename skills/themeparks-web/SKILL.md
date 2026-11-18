@@ -10,7 +10,7 @@ description: >
   themeparks-web MCP tools. Never invent waits, statuses, times, or hours.
 ---
 
-# Theme parks (themeparks-web 0.1.4)
+# Theme parks (themeparks-web 0.1.5)
 
 Call only the themeparks-web tools and report what they return. Always say how
 fresh the data is (`lastUpdated` per item, `fetchedAt` per call). Data is

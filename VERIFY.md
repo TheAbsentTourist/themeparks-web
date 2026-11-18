@@ -1,3 +1,27 @@
+# VERIFY: themeparks-web 0.1.5
+
+0.1.5 in `plugin.json`, `.cursor-plugin/plugin.json`, `package.json`, server `serverInfo` and User-Agent, skill, README, CHANGELOG-0.1.5.md, and this file. `scripts/mcp-path-test.mjs` enforces it.
+
+## 0.1.5 results
+
+Run on 2026-11-18, Linux, Node v22.23.4. Keyless. No API key was set.
+
+| Suite | Result |
+|---|---|
+| `npm run check` | PASS |
+| `npm run mcp-path` | PASS (version 0.1.5) |
+| `npm run offline` | PASS |
+| `npm run offline-keyed` | PASS |
+| `npm run offline-regression` | PASS |
+| `npm run offline-audit` | PASS |
+| `npm run smoke` | 50/50 PASS |
+
+`initialize` reported `themeparks-web 0.1.5`. `tools/list` returned 4 tools. Every checked result carried the Powered by ThemeParks.wiki credit. An unexpanded `${THEMEPARKS_API_KEY}` was treated as no key.
+
+The NightFlight offline fixture is 2026-10-11, which is outside the keyless 7-day window on this date. That test pins the clock to 2026-10-12T02:00:00Z and still checks the captured rows (DOWN 7, OPERATING 42, DOWN 22, OPERATING 48). Live smoke history checks use a finished day inside the current window (2026-11-16 on this run).
+
+`npm pack` produced `themeparks-web-0.1.5.tgz` with executable `server.mjs` and `skills/themeparks-web/SKILL.md`. From `/tmp`, `npx --yes --package=<tarball> themeparks-web` with `THEMEPARKS_API_KEY` set to the literal `${THEMEPARKS_API_KEY}` answered MCP `initialize` (`serverInfo` 0.1.5) and `tools/list` with 4 tools. `key_status` reported `keyConfigured: false`.
+
 # VERIFY: themeparks-web 0.1.4
 
 0.1.4 in `plugin.json`, `.cursor-plugin/plugin.json`, `package.json`, server `serverInfo` and User-Agent, skill, README, CHANGELOG-0.1.4.md, and this file. `scripts/mcp-path-test.mjs` enforces it.

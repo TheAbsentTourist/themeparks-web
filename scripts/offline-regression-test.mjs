@@ -71,21 +71,29 @@ assert.match(byPark["Magic Kingdom Park"].bestTimeToRide.startLocal ?? byPark["M
 assert.equal(byPark["Disneyland Park"].timezone, "America/Los_Angeles");
 pass("same-name group: each item uses its own park timezone");
 
-r = await callTool("themeparks_uptime", { entity: NF, granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
-assert.equal(r.isError, false, JSON.stringify(r.payload));
-assert.deepEqual(r.payload.intervals.map((i) => [i.status, i.startLocal, i.endLocal, i.minutes]), [
-  ["DOWN", "Oct 11, 4:00:00 PM EDT", "Oct 11, 4:07:29 PM EDT", 7],
-  ["OPERATING", "Oct 11, 4:07:29 PM EDT", "Oct 11, 4:49:32 PM EDT", 42],
-  ["DOWN", "Oct 11, 4:49:32 PM EDT", "Oct 11, 5:11:47 PM EDT", 22],
-  ["OPERATING", "Oct 11, 5:11:47 PM EDT", "Oct 11, 6:00:00 PM EDT", 48],
-]);
-assert.deepEqual([r.payload.waitTimeline.min, r.payload.waitTimeline.max], [40, 120]);
-assert.equal(r.payload.zoneNote, undefined);
-pass("NightFlight 2026-10-11 4-6 PM ET (real rows): DOWN 7, OPERATING 42, DOWN 22, OPERATING 48; waits 40-120");
+// Keyless history is 7 days ending today. Pin the clock to the fixture evening
+// so 2026-10-11 stays inside the window after that date has passed.
+const realNow = Date.now;
+Date.now = () => Date.parse("2026-10-12T02:00:00.000Z");
+try {
+  r = await callTool("themeparks_uptime", { entity: NF, granularity: "changes", from: "2026-10-11T16:00", to: "2026-10-11T18:00" });
+  assert.equal(r.isError, false, JSON.stringify(r.payload));
+  assert.deepEqual(r.payload.intervals.map((i) => [i.status, i.startLocal, i.endLocal, i.minutes]), [
+    ["DOWN", "Oct 11, 4:00:00 PM EDT", "Oct 11, 4:07:29 PM EDT", 7],
+    ["OPERATING", "Oct 11, 4:07:29 PM EDT", "Oct 11, 4:49:32 PM EDT", 42],
+    ["DOWN", "Oct 11, 4:49:32 PM EDT", "Oct 11, 5:11:47 PM EDT", 22],
+    ["OPERATING", "Oct 11, 5:11:47 PM EDT", "Oct 11, 6:00:00 PM EDT", 48],
+  ]);
+  assert.deepEqual([r.payload.waitTimeline.min, r.payload.waitTimeline.max], [40, 120]);
+  assert.equal(r.payload.zoneNote, undefined);
+  pass("NightFlight 2026-10-11 4-6 PM ET (real rows): DOWN 7, OPERATING 42, DOWN 22, OPERATING 48; waits 40-120");
 
-r = await callTool("themeparks_uptime", { entity: NF, granularity: "changes", from: "2026-10-11T16:00:00-07:00", to: "2026-10-11T18:00:00-07:00" });
-assert.match(r.payload.zoneNote, /-07:00.*-04:00.*7:00:00 PM EDT/);
-assert.equal(r.payload.range.fromLocal, "Oct 11, 7:00:00 PM EDT");
-pass("offset that is not the park's (-07:00) is flagged with zoneNote and the park-time range it really read");
+  r = await callTool("themeparks_uptime", { entity: NF, granularity: "changes", from: "2026-10-11T16:00:00-07:00", to: "2026-10-11T18:00:00-07:00" });
+  assert.match(r.payload.zoneNote, /-07:00.*-04:00.*7:00:00 PM EDT/);
+  assert.equal(r.payload.range.fromLocal, "Oct 11, 7:00:00 PM EDT");
+  pass("offset that is not the park's (-07:00) is flagged with zoneNote and the park-time range it really read");
+} finally {
+  Date.now = realNow;
+}
 
 console.log("offline-regression-test: PASS");
